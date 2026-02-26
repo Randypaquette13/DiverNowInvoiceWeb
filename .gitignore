@@ -1,0 +1,48 @@
+# Local / env
+.stuff
+.stuff.txt
+.env
+.env.example
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Build / output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test / coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Cache
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+.node_repl_history
