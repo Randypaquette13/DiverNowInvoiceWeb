@@ -58,12 +58,18 @@ export default function Dashboard() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['cleanings'] }),
   });
 
+  const [invoiceError, setInvoiceError] = useState(null);
   const fromTemplateMutation = useMutation({
     mutationFn: createInvoiceFromTemplate,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cleanings'] });
       queryClient.invalidateQueries({ queryKey: ['square-invoices'] });
       setSendInvoiceEventId(null);
+      setInvoiceError(null);
+    },
+    onError: (err) => {
+      const msg = err.body?.detail || err.body?.error || err.message || 'Failed to create invoice';
+      setInvoiceError(msg);
     },
   });
 
@@ -188,6 +194,7 @@ export default function Dashboard() {
             const linkedInvoice = mapping && invoices.find((i) => i.external_order_id === mapping.order_id);
             const isPending = !record || record.status === 'pending';
             const isYes = record?.status === 'yes';
+            const invoiceAlreadySent = Boolean(record?.square_order_id);
             const extraWorkLineItems = parseExtraWorkItems(record?.extra_work);
             return (
               <li
@@ -203,6 +210,9 @@ export default function Dashboard() {
                     {linkedInvoice && (
                       <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md max-w-sm">
                         <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1.5">Invoice Preview</p>
+                        {invoiceAlreadySent && (
+                          <p className="text-sm text-slate-600 mb-2 font-medium">Invoice already sent for this event.</p>
+                        )}
                         {(linkedInvoice.customer_name || linkedInvoice.customer_email) && (
                           <p className="text-sm text-slate-700 mb-2">
                             {linkedInvoice.customer_name && <span className="font-medium">{linkedInvoice.customer_name}</span>}
@@ -295,32 +305,38 @@ export default function Dashboard() {
                               : 'bg-gray-100 text-gray-700'
                           }`}
                         >
-                          {record.status}
+                          {record.status === 'yes' ? 'Job Completed' : record.status === 'no' ? 'Skipped' : record.status}
                         </span>
                         {isYes && (
                           <>
                             {mapping ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setAddExtraWorkEventId(ev.id);
-                                    setExtraWorkItems(parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work).length > 0
-                                      ? parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work)
-                                      : [{ title: '', value: '' }]);
-                                  }}
-                                  className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm hover:bg-emerald-700"
-                                >
-                                  Add extra work
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setSendInvoiceEventId(ev.id)}
-                                  className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
-                                >
-                                  Send invoice
-                                </button>
-                              </>
+                              invoiceAlreadySent ? (
+                                <span className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded text-sm">
+                                  Invoice sent
+                                </span>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setAddExtraWorkEventId(ev.id);
+                                      setExtraWorkItems(parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work).length > 0
+                                        ? parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work)
+                                        : [{ title: '', value: '' }]);
+                                    }}
+                                    className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm hover:bg-emerald-700"
+                                  >
+                                    Add extra work
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSendInvoiceEventId(ev.id)}
+                                    className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                                  >
+                                    Send invoice
+                                  </button>
+                                </>
+                              )
                             ) : (
                               <>
                                 <button
@@ -394,17 +410,36 @@ export default function Dashboard() {
                     }}
                     className="flex-1 border rounded px-3 py-2 min-w-0"
                   />
-                  <input
-                    type="number"
-                    placeholder="Price"
-                    value={item.value}
-                    onChange={(e) => {
-                      const next = [...extraWorkItems];
-                      next[idx] = { ...next[idx], value: e.target.value };
-                      setExtraWorkItems(next);
-                    }}
-                    className="w-24 border rounded px-3 py-2"
-                  />
+                  <div className="flex items-center border rounded overflow-hidden w-28 bg-white">
+                    <span className="pl-3 py-2 text-gray-500 text-sm border-r bg-gray-50">$</span>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0.00"
+                      value={item.value}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v !== '' && (v.startsWith('-') || parseFloat(v) < 0)) return;
+                        const next = [...extraWorkItems];
+                        next[idx] = { ...next[idx], value: v };
+                        setExtraWorkItems(next);
+                      }}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (v === '') return;
+                        const num = parseFloat(v);
+                        if (!Number.isNaN(num) && num >= 0) {
+                          const formatted = num.toFixed(2);
+                          if (formatted !== v) {
+                            const next = [...extraWorkItems];
+                            next[idx] = { ...next[idx], value: formatted };
+                            setExtraWorkItems(next);
+                          }
+                        }
+                      }}
+                      className="w-full border-0 rounded-none px-2 py-2 focus:ring-0 focus:ring-inset"
+                    />
+                  </div>
                   <button
                     type="button"
                     onClick={() => setExtraWorkItems(extraWorkItems.filter((_, i) => i !== idx))}
@@ -438,25 +473,90 @@ export default function Dashboard() {
         </div>
       )}
 
-      {sendInvoiceEventId && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-20" onClick={() => setSendInvoiceEventId(null)}>
-          <div className="bg-white p-6 rounded-lg shadow max-w-md w-full" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-medium mb-2">Send invoice</h3>
-            <p className="text-sm text-gray-600 mb-4">Create and send the invoice using the linked template and any extra work line items you added.</p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => handleSendInvoice(sendInvoiceEventId)}
-                disabled={fromTemplateMutation.isPending}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                {fromTemplateMutation.isPending ? 'Creating...' : 'Create invoice'}
-              </button>
-              <button type="button" onClick={() => setSendInvoiceEventId(null)} className="px-4 py-2 text-gray-600">Cancel</button>
+      {sendInvoiceEventId && (() => {
+        const ev = events.find((e) => e.id === sendInvoiceEventId);
+        const record = ev ? recordsByEvent[ev.id] : null;
+        const mapping = ev ? mappingByEvent[ev.id] : null;
+        const linkedInvoice = mapping && ev ? invoices.find((i) => i.external_order_id === mapping.order_id) : null;
+        const extraWorkLineItems = record ? parseExtraWorkItems(record.extra_work) : [];
+        return (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-20" onClick={() => setSendInvoiceEventId(null)}>
+            <div className="bg-white p-6 rounded-lg shadow max-w-md w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <h3 className="font-medium mb-2">Send invoice</h3>
+              <p className="text-sm text-gray-600 mb-4">This invoice will be sent by email to the customer below.</p>
+              {invoiceError && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-800">
+                  {invoiceError}
+                </div>
+              )}
+              {linkedInvoice && (
+                <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-md">
+                  <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1.5">Invoice preview</p>
+                  {(linkedInvoice.customer_name || linkedInvoice.customer_email) && (
+                    <p className="text-sm text-slate-700 mb-2">
+                      {linkedInvoice.customer_name && <span className="font-medium">{linkedInvoice.customer_name}</span>}
+                      {linkedInvoice.customer_name && linkedInvoice.customer_email && ' · '}
+                      {linkedInvoice.customer_email && <span className="text-slate-600">{linkedInvoice.customer_email}</span>}
+                    </p>
+                  )}
+                  {linkedInvoice.sales_line_items?.length > 0 ? (
+                    <ul className="text-sm text-slate-700 space-y-1 mb-2">
+                      {linkedInvoice.sales_line_items.map((item, i) => (
+                        <li key={i} className="flex justify-between gap-3">
+                          <span>{item.name}{item.quantity && Number(item.quantity) !== 1 ? ` × ${item.quantity}` : ''}</span>
+                          <span className="tabular-nums text-slate-900">
+                            {item.total_money?.amount != null ? formatCentsToDollars(item.total_money.amount) : '—'}
+                          </span>
+                        </li>
+                      ))}
+                      {extraWorkLineItems.map((item, idx) => (
+                        <li key={idx} className="flex justify-between gap-3 text-emerald-700">
+                          <span>{item.title || 'Extra'}</span>
+                          <span className="tabular-nums">{item.value ? formatDollars(item.value) : '—'}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <>
+                      {linkedInvoice.line_items_summary && <p className="text-sm text-slate-600 mb-2">{linkedInvoice.line_items_summary}</p>}
+                      {extraWorkLineItems.length > 0 && (
+                        <ul className="text-sm text-slate-700 space-y-1 mb-2">
+                          {extraWorkLineItems.map((item, idx) => (
+                            <li key={idx} className="flex justify-between gap-3 text-emerald-700">
+                              <span>{item.title || 'Extra'}</span>
+                              <span className="tabular-nums">{item.value ? formatDollars(item.value) : '—'}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                  <p className="text-sm font-semibold text-slate-900 border-t border-slate-200 pt-2 flex justify-between">
+                    <span>Total</span>
+                    <span className="tabular-nums">
+                      {formatDollars(
+                        (parseFloat(linkedInvoice.amount) || 0) +
+                        extraWorkLineItems.reduce((sum, item) => sum + (parseFloat(item.value) || 0), 0)
+                      )}
+                    </span>
+                  </p>
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleSendInvoice(sendInvoiceEventId)}
+                  disabled={fromTemplateMutation.isPending}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                  {fromTemplateMutation.isPending ? 'Confirming...' : 'Confirm'}
+                </button>
+                <button type="button" onClick={() => { setSendInvoiceEventId(null); setInvoiceError(null); }} className="px-4 py-2 text-gray-600">Cancel</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {customInvoiceEventId && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-20" onClick={() => setCustomInvoiceEventId(null)}>

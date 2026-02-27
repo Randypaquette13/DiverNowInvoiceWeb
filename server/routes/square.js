@@ -381,14 +381,29 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
   const order = orderData.order;
   if (!order?.id) return res.status(502).json({ error: 'Square did not return an order' });
 
+  const customerEmail = (invoiceToCustomerEmail(templateInvoice) || '').trim();
+  const templateRecipient = templateInvoice.primary_recipient;
+  const customerId = templateRecipient?.customer_id;
+  if (!customerEmail) {
+    return res.status(400).json({
+      error: 'Template invoice has no customer email',
+      detail: 'Link an invoice that has a recipient email (from Square) so we can send the invoice. You can still create invoices via the Associate page and share the link manually.',
+    });
+  }
+  const useEmailDelivery = Boolean(customerId);
   const dueDate = new Date();
   dueDate.setDate(dueDate.getDate() + 7);
   const dueDateStr = dueDate.toISOString().slice(0, 10);
+  // Square derives email_address, given_name, etc. from customer profile — send only customer_id when present
+  const primaryRecipient = customerId
+    ? { customer_id: customerId }
+    : { email_address: customerEmail };
   const invoicePayload = {
     location_id: locationId,
     order_id: order.id,
+    primary_recipient: primaryRecipient,
     payment_requests: [{ request_type: 'BALANCE', due_date: dueDateStr }],
-    delivery_method: 'SHARE_MANUALLY',
+    delivery_method: useEmailDelivery ? 'EMAIL' : 'SHARE_MANUALLY',
     accepted_payment_methods: { card: true, square_gift_card: false, bank_account: false, buy_now_pay_later: false, cash_app_pay: false },
     title: 'Boat Cleaning',
   };
@@ -409,8 +424,21 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
   const invoice = invData.invoice;
   if (!invoice?.id) return res.status(502).json({ error: 'Square did not return an invoice' });
 
-  const amount = invoiceToAmount(invoice);
-  const customerEmail = invoiceToCustomerEmail(templateInvoice);
+  const version = invoice.version ?? 0;
+  const publishRes = await fetch(`${base}/v2/invoices/${invoice.id}/publish`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ version, idempotency_key: `divernow-pub-${userId}-${invoice.id}-${Date.now()}` }),
+  });
+  if (!publishRes.ok) {
+    const data = await publishRes.json().catch(() => ({}));
+    const detail = data.errors?.[0]?.detail || await publishRes.text();
+    return res.status(publishRes.status).json({ error: 'Publish invoice failed', detail });
+  }
+  const publishedData = await publishRes.json();
+  const publishedInvoice = publishedData.invoice || invoice;
+
+  const amount = invoiceToAmount(publishedInvoice);
   await pool.query(
     'UPDATE cleaning_records SET square_order_id = $2, updated_at = NOW() WHERE user_id = $1 AND calendar_event_id = $3',
     [userId, invoice.id, calendar_event_id]
@@ -419,7 +447,7 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
     `INSERT INTO square_orders (user_id, external_order_id, customer_email, amount, line_items_summary, raw_json, synced_at)
      VALUES ($1, $2, $3, $4, $5, $6, NOW())
      ON CONFLICT (user_id, external_order_id) DO UPDATE SET raw_json = EXCLUDED.raw_json, synced_at = NOW()`,
-    [userId, invoice.id, customerEmail, amount, invoice.title || 'Boat Cleaning', JSON.stringify(invoice)]
+    [userId, publishedInvoice.id, customerEmail, amount, publishedInvoice.title || 'Boat Cleaning', JSON.stringify(publishedInvoice)]
   );
-  res.status(201).json(invoice);
+  res.status(201).json(publishedInvoice);
 });
