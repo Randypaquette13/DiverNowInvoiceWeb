@@ -28,11 +28,16 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100">
       <form
         onSubmit={handleSubmit}
-        className="bg-white p-8 rounded-lg shadow-md w-full max-w-sm"
+        className="bg-white p-8 rounded-lg shadow-md w-full max-w-sm flex flex-col items-center"
       >
+        <img
+          src="/logo.png"
+          alt="Diver Now Marine Services"
+          className="w-64 h-64 object-contain mb-6"
+        />
         <h1 className="text-xl font-semibold text-gray-900 mb-6">Diver Now Admin</h1>
         {error && (
           <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded">{error}</div>

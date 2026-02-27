@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon index.js",
+    "build": "echo ok",
     "start": "node index.js",
     "db:migrate": "node run-migrate.mjs",
     "db:migrate:up": "node run-migrate-up.mjs"
