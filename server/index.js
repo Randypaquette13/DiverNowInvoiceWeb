@@ -27,6 +27,9 @@ import { runDailySummary } from './services/push.js';
 const pgSession = connectPgSimple(session);
 const app = express();
 
+// Required behind Railway/Heroku etc. so req.secure and req.protocol are correct
+app.set('trust proxy', 1);
+
 app.use(cors({
   origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
   credentials: true,

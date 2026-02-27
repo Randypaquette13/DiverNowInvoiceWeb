@@ -1,6 +1,6 @@
 # Diver Now Admin – API Reference
 
-Base URL: your server (e.g. `https://yourapp.com` or `http://localhost:5000`).  
+Base URL: [https://divernowinvoiceweb-production.up.railway.app](https://divernowinvoiceweb-production.up.railway.app/login)  
 All requests that require auth must send **cookies** (`credentials: 'include'` in fetch).
 
 ---
