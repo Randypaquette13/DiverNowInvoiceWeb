@@ -41,13 +41,13 @@ In **Variables** (or **Settings** → **Environment**), set:
 | `CLIENT_ORIGIN` | Yes | Your app’s public URL, e.g. `https://your-app.up.railway.app`. |
 | `GOOGLE_CLIENT_ID` | If using Google Calendar | From Google Cloud Console. |
 | `GOOGLE_CLIENT_SECRET` | If using Google Calendar | From Google Cloud Console. |
-| `GOOGLE_REDIRECT_URI` | If using Google Calendar | `https://your-app.up.railway.app/api/auth/google/callback`. |
+| ~~`GOOGLE_REDIRECT_URI`~~ | — | Not used. Callback URL is always `{CLIENT_ORIGIN}/api/auth/google/callback`. |
 | `SQUARE_ACCESS_TOKEN` | Optional | Default Square token (or set per user in app). |
 | `SQUARE_LOCATION_ID` | Optional | Default Square location. |
 | `SQUARE_ENVIRONMENT` | Optional | `sandbox` or production. |
 | `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`, `APNS_KEY_PATH` | Optional | For iOS push; only if you use push. |
 
-After the first deploy, set **CLIENT_ORIGIN** (and **GOOGLE_REDIRECT_URI** if you use Google) to the URL Railway gives you (e.g. from **Settings** → **Networking** → **Generate Domain**).
+After the first deploy, set **CLIENT_ORIGIN** to your app URL including `https://` (e.g. from **Settings** → **Networking** → **Generate Domain**). The Google OAuth callback URL is then `{CLIENT_ORIGIN}/api/auth/google/callback`.
 
 ## 4. Deploy
 
@@ -69,4 +69,4 @@ After the first deploy, set **CLIENT_ORIGIN** (and **GOOGLE_REDIRECT_URI** if yo
 - **Build fails:** Ensure Build Command installs and builds the client and installs the server (see above). Check the build logs for missing deps or failed `vite build`.
 - **502 / app not starting:** Check that Start Command runs from repo root and that `server/node_modules` exists (server install in build). Check logs for `DATABASE_URL` or migration errors.
 - **Session / login broken:** Ensure `SESSION_SECRET` is set and `CLIENT_ORIGIN` matches the URL you use (no trailing slash). Use HTTPS in production.
-- **Google login redirect:** `GOOGLE_REDIRECT_URI` must match exactly what’s in Google Console and use the same host as `CLIENT_ORIGIN`.
+- **Google login redirect:** Callback URL is built from `CLIENT_ORIGIN`. In Google Console, add exactly `https://your-app.up.railway.app/api/auth/google/callback` (same host as `CLIENT_ORIGIN`).

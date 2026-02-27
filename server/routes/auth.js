@@ -4,11 +4,21 @@ import { google } from 'googleapis';
 import pool from '../db/pool.js';
 
 export const authRouter = Router();
+
+/** Always build callback URL from CLIENT_ORIGIN so path is never wrong (e.g. hostname in path). */
+function getGoogleRedirectUri() {
+  let origin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+  if (!/^https?:\/\//i.test(origin)) {
+    origin = 'https://' + origin;
+  }
+  return origin.replace(/\/$/, '') + '/api/auth/google/callback';
+}
+
 const oauth2Client = () =>
   new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
+    getGoogleRedirectUri()
   );
 
 authRouter.post('/login', async (req, res) => {
