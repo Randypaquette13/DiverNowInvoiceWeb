@@ -105,7 +105,8 @@ squareRouter.post('/sync', async (req, res) => {
     cursor = data.cursor || null;
     if (!cursor) break;
   }
-  for (const inv of allInvoices) {
+  const draftOnly = allInvoices.filter((inv) => inv.status === 'DRAFT');
+  for (const inv of draftOnly) {
     if (!inv.id) continue;
     const amount = invoiceToAmount(inv);
     const customerEmail = invoiceToCustomerEmail(inv);
@@ -131,14 +132,16 @@ squareRouter.post('/sync', async (req, res) => {
       [userId, invToStore.id, customerEmail, amount, summary, JSON.stringify(invToStore)]
     );
   }
-  res.json({ synced: allInvoices.length });
+  res.json({ synced: draftOnly.length });
 });
 
 squareRouter.get('/invoices', async (req, res) => {
   const userId = req.session.userId;
   const { rows } = await pool.query(
     `SELECT id, user_id, external_order_id, customer_email, amount, line_items_summary, synced_at, raw_json
-     FROM square_orders WHERE user_id = $1 ORDER BY synced_at DESC`,
+     FROM square_orders
+     WHERE user_id = $1 AND (raw_json->>'status' IS NULL OR raw_json->>'status' = 'DRAFT')
+     ORDER BY synced_at DESC`,
     [userId]
   );
   const list = rows.map((r) => {
@@ -151,6 +154,7 @@ squareRouter.get('/invoices', async (req, res) => {
       customer_email: r.customer_email,
       customer_name: customerName,
       amount: r.amount,
+      title: r.raw_json?.title || r.line_items_summary || null,
       line_items_summary: r.line_items_summary,
       synced_at: r.synced_at,
     };
@@ -303,12 +307,23 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
   );
   const mapping = mappingRows[0];
   if (!mapping) return res.status(400).json({ error: 'No invoice associated with this event. Link an invoice first.' });
+
   const { rows: templateRows } = await pool.query(
     'SELECT raw_json FROM square_orders WHERE user_id = $1 AND external_order_id = $2',
     [userId, mapping.square_order_id]
   );
   const templateInvoice = templateRows[0]?.raw_json;
   if (!templateInvoice) return res.status(404).json({ error: 'Template invoice not found' });
+
+  const { rows: eventRows } = await pool.query(
+    'SELECT title, start_at FROM calendar_events WHERE id = $1 AND user_id = $2',
+    [calendar_event_id, userId]
+  );
+  const event = eventRows[0];
+  const eventDate = event?.start_at ? new Date(event.start_at) : new Date();
+  const dateStr = `${eventDate.getMonth() + 1}/${eventDate.getDate()}/${eventDate.getFullYear()}`;
+  const baseTitle = (templateInvoice.title || '').trim() || 'Boat Cleaning';
+  const invoiceTitle = `${baseTitle} on ${dateStr}`;
   const { token, locationId } = await getSquareCreds(userId);
   if (!token || !locationId) return res.status(400).json({ error: 'Square not configured' });
 
@@ -405,7 +420,7 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
     payment_requests: [{ request_type: 'BALANCE', due_date: dueDateStr }],
     delivery_method: useEmailDelivery ? 'EMAIL' : 'SHARE_MANUALLY',
     accepted_payment_methods: { card: true, square_gift_card: false, bank_account: false, buy_now_pay_later: false, cash_app_pay: false },
-    title: 'Boat Cleaning',
+    title: invoiceTitle,
   };
   const invRes = await fetch(`${base}/v2/invoices`, {
     method: 'POST',
@@ -447,7 +462,7 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
     `INSERT INTO square_orders (user_id, external_order_id, customer_email, amount, line_items_summary, raw_json, synced_at)
      VALUES ($1, $2, $3, $4, $5, $6, NOW())
      ON CONFLICT (user_id, external_order_id) DO UPDATE SET raw_json = EXCLUDED.raw_json, synced_at = NOW()`,
-    [userId, publishedInvoice.id, customerEmail, amount, publishedInvoice.title || 'Boat Cleaning', JSON.stringify(publishedInvoice)]
+    [userId, publishedInvoice.id, customerEmail, amount, publishedInvoice.title || invoiceTitle, JSON.stringify(publishedInvoice)]
   );
   res.status(201).json(publishedInvoice);
 });

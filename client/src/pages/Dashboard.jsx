@@ -1,11 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   getEvents,
   getCleaningRecords,
   getMappings,
   getSquareInvoices,
   syncCalendar,
+  syncSquareInvoices,
   upsertCleaningRecord,
   createInvoiceFromTemplate,
   createMapping,
@@ -13,17 +14,18 @@ import {
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
-  const [from, setFrom] = useState(() => {
+  const [from, setFrom] = useState(() => new Date().toISOString().slice(0, 10));
+  const [to, setTo] = useState(() => {
     const d = new Date();
-    d.setDate(d.getDate() - 7);
+    d.setDate(d.getDate() + 7);
     return d.toISOString().slice(0, 10);
   });
-  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [linkEventId, setLinkEventId] = useState(null);
   const [customInvoiceEventId, setCustomInvoiceEventId] = useState(null);
   const [extraWorkItems, setExtraWorkItems] = useState([]); // [{ title, value }, ...] for Add extra work modal
   const [sendInvoiceEventId, setSendInvoiceEventId] = useState(null);
   const [addExtraWorkEventId, setAddExtraWorkEventId] = useState(null);
+  const [collapsedEventIds, setCollapsedEventIds] = useState(() => new Set());
 
   const { data: events = [], isLoading: eventsLoading } = useQuery({
     queryKey: ['events', from, to],
@@ -45,10 +47,32 @@ export default function Dashboard() {
     queryFn: getSquareInvoices,
   });
 
+  const [syncError, setSyncError] = useState(null);
   const syncMutation = useMutation({
-    mutationFn: syncCalendar,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['events'] }),
+    mutationFn: async ({ from: f, to: t }) => {
+      await Promise.all([
+        syncCalendar(f && t ? { from: f, to: t } : undefined),
+        syncSquareInvoices(),
+      ]);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      queryClient.invalidateQueries({ queryKey: ['mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['square-invoices'] });
+      setSyncError(null);
+    },
+    onError: (err) => {
+      const msg = err.body?.error || err.body?.detail || err.message || 'Refresh failed';
+      setSyncError(msg);
+      if (err.body?.code === 'google_reconnect') {
+        queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      }
+    },
   });
+
+  useEffect(() => {
+    syncMutation.mutate({ from, to });
+  }, [from, to]);
 
   const recordsByEvent = Object.fromEntries(records.map((r) => [r.calendar_event_id, r]));
   const mappingByEvent = Object.fromEntries(mappings.map((m) => [m.calendar_event_id, m]));
@@ -61,9 +85,12 @@ export default function Dashboard() {
   const [invoiceError, setInvoiceError] = useState(null);
   const fromTemplateMutation = useMutation({
     mutationFn: createInvoiceFromTemplate,
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['cleanings'] });
       queryClient.invalidateQueries({ queryKey: ['square-invoices'] });
+      if (variables?.calendar_event_id) {
+        setCollapsedEventIds((prev) => new Set([...prev, variables.calendar_event_id]));
+      }
       setSendInvoiceEventId(null);
       setInvoiceError(null);
     },
@@ -173,17 +200,18 @@ export default function Dashboard() {
         >
           Connect Google Calendar
         </a>
-        <button
-          type="button"
-          onClick={() => syncMutation.mutate()}
-          disabled={syncMutation.isPending}
-          className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 text-sm"
-        >
-          {syncMutation.isPending ? 'Syncing...' : 'Refresh calendar'}
-        </button>
+        {syncMutation.isPending && (
+          <span className="text-sm text-gray-500">Syncing calendar…</span>
+        )}
       </div>
-      {eventsLoading ? (
-        <p className="text-gray-500">Loading events...</p>
+      {syncError && (
+        <p className="mb-4 text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 text-sm">
+          {syncError}
+          {syncError.includes('expired') || syncError.includes('revoked') ? ' Use “Connect Google Calendar” above to reconnect.' : ''}
+        </p>
+      )}
+      {eventsLoading || syncMutation.isPending ? (
+        <p className="text-gray-500">Loading events…</p>
       ) : events.length === 0 ? (
         <p className="text-gray-500">No events in this range. Connect Google Calendar or adjust dates.</p>
       ) : (
@@ -196,170 +224,234 @@ export default function Dashboard() {
             const isYes = record?.status === 'yes';
             const invoiceAlreadySent = Boolean(record?.square_order_id);
             const extraWorkLineItems = parseExtraWorkItems(record?.extra_work);
+            const hasPreview = Boolean(linkedInvoice);
+            const isCollapsed = hasPreview && collapsedEventIds.has(ev.id);
+            const invoiceTitleStr = linkedInvoice
+              ? `${(linkedInvoice.title || '').trim() || 'Boat Cleaning'} on ${(() => {
+                  const d = ev.start_at ? new Date(ev.start_at) : new Date();
+                  return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+                })()}`
+              : '';
+            const totalAmount = linkedInvoice
+              ? (parseFloat(linkedInvoice.amount) || 0) +
+                extraWorkLineItems.reduce((sum, item) => sum + (parseFloat(item.value) || 0), 0)
+              : 0;
+            const toggleCollapsed = () => {
+              setCollapsedEventIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(ev.id)) next.delete(ev.id);
+                else next.add(ev.id);
+                return next;
+              });
+            };
             return (
               <li
                 key={ev.id}
                 className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm"
               >
                 <div className="flex justify-between items-start flex-wrap gap-2">
-                  <div>
-                    <p className="font-medium text-gray-900">{ev.title || 'Untitled'}</p>
-                    <p className="text-sm text-gray-500">
-                      {new Date(ev.start_at).toLocaleString()}
-                    </p>
-                    {linkedInvoice && (
-                      <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md max-w-sm">
-                        <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1.5">Invoice Preview</p>
-                        {invoiceAlreadySent && (
-                          <p className="text-sm text-slate-600 mb-2 font-medium">Invoice already sent for this event.</p>
-                        )}
-                        {(linkedInvoice.customer_name || linkedInvoice.customer_email) && (
-                          <p className="text-sm text-slate-700 mb-2">
-                            {linkedInvoice.customer_name && <span className="font-medium">{linkedInvoice.customer_name}</span>}
-                            {linkedInvoice.customer_name && linkedInvoice.customer_email && ' · '}
-                            {linkedInvoice.customer_email && <span className="text-slate-600">{linkedInvoice.customer_email}</span>}
-                          </p>
-                        )}
-                        {linkedInvoice.sales_line_items?.length > 0 ? (
-                          <ul className="text-sm text-slate-700 space-y-1 mb-2">
-                            {linkedInvoice.sales_line_items.map((item, i) => (
-                              <li key={i} className="flex justify-between gap-3">
-                                <span>
-                                  {item.name}
-                                  {item.quantity && Number(item.quantity) !== 1 ? ` × ${item.quantity}` : ''}
-                                </span>
-                                <span className="tabular-nums text-slate-900">
-                                  {item.total_money?.amount != null
-                                    ? formatCentsToDollars(item.total_money.amount)
-                                    : '—'}
-                                </span>
-                              </li>
-                            ))}
-                            {extraWorkLineItems.map((item, idx) => (
-                              <li key={idx} className="flex justify-between gap-3 text-emerald-700">
-                                <span>{item.title || 'Extra'}</span>
-                                <span className="tabular-nums">
-                                  {item.value ? formatDollars(item.value) : '—'}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
+                  <div className="flex-1 min-w-0 flex items-start gap-2">
+                    {hasPreview && (
+                      <button
+                        type="button"
+                        onClick={toggleCollapsed}
+                        className="shrink-0 p-0.5 rounded text-slate-500 hover:text-slate-700 hover:bg-slate-100"
+                        title={isCollapsed ? 'Expand invoice preview' : 'Collapse'}
+                        aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+                      >
+                        {isCollapsed ? (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
                         ) : (
-                          <>
-                            {linkedInvoice.line_items_summary && (
-                              <p className="text-sm text-slate-600 mb-2">{linkedInvoice.line_items_summary}</p>
-                            )}
-                            {extraWorkLineItems.length > 0 && (
-                              <ul className="text-sm text-slate-700 space-y-1 mb-2">
-                                {extraWorkLineItems.map((item, idx) => (
-                                  <li key={idx} className="flex justify-between gap-3 text-emerald-700">
-                                    <span>{item.title || 'Extra'}</span>
-                                    <span className="tabular-nums">
-                                      {item.value ? formatDollars(item.value) : '—'}
-                                    </span>
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
-                          </>
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                          </svg>
                         )}
-                        <p className="text-sm font-semibold text-slate-900 border-t border-slate-200 pt-2 flex justify-between">
-                          <span>Total</span>
-                          <span className="tabular-nums">
-                            {formatDollars(
-                              (parseFloat(linkedInvoice.amount) || 0) +
-                              extraWorkLineItems.reduce((sum, item) => sum + (parseFloat(item.value) || 0), 0)
+                      </button>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-gray-900">{ev.title || 'Untitled'}</p>
+                      {isCollapsed ? (
+                        <>
+                          <p className="text-sm text-slate-700 mt-0.5">{invoiceTitleStr}</p>
+                          <p className="text-sm font-semibold text-slate-900 mt-1">
+                            Total: {formatDollars(totalAmount)}
+                          </p>
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {!isPending && (
+                              <span
+                                className={`px-2 py-0.5 rounded text-xs ${
+                                  record?.status === 'yes' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'
+                                }`}
+                              >
+                                {record?.status === 'yes' ? 'Job Completed' : record?.status === 'no' ? 'Skipped' : record?.status}
+                              </span>
                             )}
-                          </span>
-                        </p>
-                      </div>
-                    )}
-                    {record?.notes && (
-                      <p className="text-sm text-gray-600 mt-1">Notes: {record.notes}</p>
-                    )}
+                            {invoiceAlreadySent && (
+                              <span className="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700">Invoice sent</span>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm text-gray-500">
+                            {new Date(ev.start_at).toLocaleString()}
+                          </p>
+                          {linkedInvoice && (
+                            <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md max-w-sm">
+                              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1.5">Invoice Preview</p>
+                              <p className="text-base font-semibold text-slate-900 mb-2">{invoiceTitleStr}</p>
+                              {invoiceAlreadySent && (
+                                <p className="text-sm text-red-600 mb-2 font-semibold">Invoice already sent for this event.</p>
+                              )}
+                              {(linkedInvoice.customer_name || linkedInvoice.customer_email) && (
+                                <p className="text-sm text-slate-700 mb-2">
+                                  {linkedInvoice.customer_name && <span className="font-medium">{linkedInvoice.customer_name}</span>}
+                                  {linkedInvoice.customer_name && linkedInvoice.customer_email && ' · '}
+                                  {linkedInvoice.customer_email && <span className="text-slate-600">{linkedInvoice.customer_email}</span>}
+                                </p>
+                              )}
+                              {linkedInvoice.sales_line_items?.length > 0 ? (
+                                <ul className="text-sm text-slate-700 space-y-1 mb-2">
+                                  {linkedInvoice.sales_line_items.map((item, i) => (
+                                    <li key={i} className="flex justify-between gap-3">
+                                      <span>
+                                        {item.name}
+                                        {item.quantity && Number(item.quantity) !== 1 ? ` × ${item.quantity}` : ''}
+                                      </span>
+                                      <span className="tabular-nums text-slate-900">
+                                        {item.total_money?.amount != null
+                                          ? formatCentsToDollars(item.total_money.amount)
+                                          : '—'}
+                                      </span>
+                                    </li>
+                                  ))}
+                                  {extraWorkLineItems.map((item, idx) => (
+                                    <li key={idx} className="flex justify-between gap-3 text-emerald-700">
+                                      <span>{item.title || 'Extra'}</span>
+                                      <span className="tabular-nums">
+                                        {item.value ? formatDollars(item.value) : '—'}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <>
+                                  {linkedInvoice.line_items_summary && (
+                                    <p className="text-sm text-slate-600 mb-2">{linkedInvoice.line_items_summary}</p>
+                                  )}
+                                  {extraWorkLineItems.length > 0 && (
+                                    <ul className="text-sm text-slate-700 space-y-1 mb-2">
+                                      {extraWorkLineItems.map((item, idx) => (
+                                        <li key={idx} className="flex justify-between gap-3 text-emerald-700">
+                                          <span>{item.title || 'Extra'}</span>
+                                          <span className="tabular-nums">
+                                            {item.value ? formatDollars(item.value) : '—'}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </>
+                              )}
+                              <p className="text-sm font-semibold text-slate-900 border-t border-slate-200 pt-2 flex justify-between">
+                                <span>Total</span>
+                                <span className="tabular-nums">{formatDollars(totalAmount)}</span>
+                              </p>
+                            </div>
+                          )}
+                          {record?.notes && (
+                            <p className="text-sm text-gray-600 mt-1">Notes: {record.notes}</p>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex gap-2 items-center flex-wrap">
-                    {isPending ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleYesNo(ev.id, 'yes')}
-                          className="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700"
-                        >
-                          Job Completed
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleYesNo(ev.id, 'no')}
-                          className="px-3 py-1.5 bg-gray-500 text-white rounded text-sm hover:bg-gray-600"
-                        >
-                          Skipped
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <span
-                          className={`px-3 py-1 rounded text-sm ${
-                            record.status === 'yes'
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          {record.status === 'yes' ? 'Job Completed' : record.status === 'no' ? 'Skipped' : record.status}
-                        </span>
-                        {isYes && (
-                          <>
-                            {mapping ? (
-                              invoiceAlreadySent ? (
-                                <span className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded text-sm">
-                                  Invoice sent
-                                </span>
+                  {!isCollapsed && (
+                    <div className="flex gap-2 items-center flex-wrap">
+                      {isPending ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleYesNo(ev.id, 'yes')}
+                            className="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+                          >
+                            Job Completed
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleYesNo(ev.id, 'no')}
+                            className="px-3 py-1.5 bg-gray-500 text-white rounded text-sm hover:bg-gray-600"
+                          >
+                            Skipped
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span
+                            className={`px-3 py-1 rounded text-sm ${
+                              record.status === 'yes'
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-gray-100 text-gray-700'
+                            }`}
+                          >
+                            {record.status === 'yes' ? 'Job Completed' : record.status === 'no' ? 'Skipped' : record.status}
+                          </span>
+                          {isYes && (
+                            <>
+                              {mapping ? (
+                                invoiceAlreadySent ? (
+                                  <span className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded text-sm">
+                                    Invoice sent
+                                  </span>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setAddExtraWorkEventId(ev.id);
+                                        setExtraWorkItems(parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work).length > 0
+                                          ? parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work)
+                                          : [{ title: '', value: '' }]);
+                                      }}
+                                      className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm hover:bg-emerald-700"
+                                    >
+                                      Add extra work
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setSendInvoiceEventId(ev.id)}
+                                      className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                                    >
+                                      Send invoice
+                                    </button>
+                                  </>
+                                )
                               ) : (
                                 <>
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setAddExtraWorkEventId(ev.id);
-                                      setExtraWorkItems(parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work).length > 0
-                                        ? parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work)
-                                        : [{ title: '', value: '' }]);
-                                    }}
-                                    className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm hover:bg-emerald-700"
+                                    onClick={() => setLinkEventId(ev.id)}
+                                    className="px-3 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700"
                                   >
-                                    Add extra work
+                                    Link invoice
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => setSendInvoiceEventId(ev.id)}
-                                    className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                                    onClick={() => setCustomInvoiceEventId(ev.id)}
+                                    className="px-3 py-1.5 bg-gray-600 text-white rounded text-sm hover:bg-gray-700"
                                   >
-                                    Send invoice
+                                    Create custom invoice
                                   </button>
                                 </>
-                              )
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => setLinkEventId(ev.id)}
-                                  className="px-3 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700"
-                                >
-                                  Link invoice
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setCustomInvoiceEventId(ev.id)}
-                                  className="px-3 py-1.5 bg-gray-600 text-white rounded text-sm hover:bg-gray-700"
-                                >
-                                  Create custom invoice
-                                </button>
-                              </>
-                            )}
-                          </>
-                        )}
-                      </>
-                    )}
-                  </div>
+                              )}
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               </li>
             );
@@ -382,7 +474,7 @@ export default function Dashboard() {
               <option value="">Select invoice...</option>
               {invoices.map((inv) => (
                 <option key={inv.external_order_id} value={inv.external_order_id}>
-                  {inv.customer_email} – {inv.amount}
+                  {inv.title || inv.line_items_summary || '—'} · ${inv.amount ?? '—'} · {inv.customer_email || '—'}
                 </option>
               ))}
             </select>
@@ -489,9 +581,15 @@ export default function Dashboard() {
                   {invoiceError}
                 </div>
               )}
-              {linkedInvoice && (
+              {linkedInvoice && ev && (
                 <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-md">
                   <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1.5">Invoice preview</p>
+                  {(() => {
+                    const d = ev.start_at ? new Date(ev.start_at) : new Date();
+                    const dateStr = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+                    const baseTitle = (linkedInvoice.title || '').trim() || 'Boat Cleaning';
+                    return <p className="text-base font-semibold text-slate-900 mb-2">{baseTitle} on {dateStr}</p>;
+                  })()}
                   {(linkedInvoice.customer_name || linkedInvoice.customer_email) && (
                     <p className="text-sm text-slate-700 mb-2">
                       {linkedInvoice.customer_name && <span className="font-medium">{linkedInvoice.customer_name}</span>}

@@ -10,7 +10,8 @@
     "build:server": "cd server && npm run build",
     "start": "cd server && npm start",
     "db:migrate": "cd server && npm run db:migrate",
-    "db:migrate:up": "cd server && npm run db:migrate:up"
+    "db:migrate:up": "cd server && npm run db:migrate:up",
+    "db:reset-calendar-invoices": "cd server && npm run db:reset-calendar-invoices"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

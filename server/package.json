@@ -7,7 +7,8 @@
     "build": "echo ok",
     "start": "node index.js",
     "db:migrate": "node run-migrate.mjs",
-    "db:migrate:up": "node run-migrate-up.mjs"
+    "db:migrate:up": "node run-migrate-up.mjs",
+    "db:reset-calendar-invoices": "node scripts/reset-calendar-and-invoices.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

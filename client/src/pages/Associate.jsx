@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getEvents,
   getSquareInvoices,
   getMappings,
+  syncCalendar,
   syncSquareInvoices,
   createMapping,
   createInvoice,
@@ -16,17 +17,18 @@ export default function Associate() {
   const [selectedEventId, setSelectedEventId] = useState('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
   const [syncError, setSyncError] = useState('');
+  const [calendarSyncError, setCalendarSyncError] = useState('');
   const [customInvoiceEventId, setCustomInvoiceEventId] = useState(null);
   const [createInvoiceError, setCreateInvoiceError] = useState('');
   const [customTitle, setCustomTitle] = useState('Boat Cleaning');
   const [customAmount, setCustomAmount] = useState('');
   const [customEmail, setCustomEmail] = useState('');
-  const [from, setFrom] = useState(() => {
+  const [from, setFrom] = useState(() => new Date().toISOString().slice(0, 10));
+  const [to, setTo] = useState(() => {
     const d = new Date();
-    d.setMonth(d.getMonth() - 1);
+    d.setDate(d.getDate() + 7);
     return d.toISOString().slice(0, 10);
   });
-  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
 
   const { data: events = [] } = useQuery({
     queryKey: ['events', from, to],
@@ -51,6 +53,24 @@ export default function Associate() {
       setSyncError(err.body?.detail || err.body?.error || err.message || 'Sync failed');
     },
   });
+
+  const calendarSyncMutation = useMutation({
+    mutationFn: () => syncCalendar({ from, to }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      setCalendarSyncError('');
+    },
+    onError: (err) => {
+      setCalendarSyncError(err.body?.error || err.body?.detail || err.message || 'Calendar sync failed');
+      if (err.body?.code === 'google_reconnect') {
+        queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      }
+    },
+  });
+
+  useEffect(() => {
+    calendarSyncMutation.mutate();
+  }, [from, to]);
 
   const mappingByEvent = Object.fromEntries(
     mappings.map((m) => [m.calendar_event_id, m])
@@ -159,6 +179,39 @@ export default function Associate() {
         <p className="mb-4 text-sm text-red-600" role="alert">{syncError}</p>
       )}
 
+      <div className="flex flex-wrap items-center gap-4 mb-6">
+        <span className="text-sm text-gray-600">Calendar event range:</span>
+        <label className="flex items-center gap-2">
+          <span className="text-sm text-gray-600">From</span>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="border border-gray-300 rounded px-3 py-1.5 text-sm"
+          />
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-sm text-gray-600">To</span>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="border border-gray-300 rounded px-3 py-1.5 text-sm"
+          />
+        </label>
+        {calendarSyncMutation.isPending && (
+          <span className="text-sm text-gray-500">Loading events...</span>
+        )}
+      </div>
+      {calendarSyncError && (
+        <p className="mb-4 text-sm text-red-600" role="alert">
+          {calendarSyncError}
+          {calendarSyncError.includes('expired') || calendarSyncError.includes('revoked')
+            ? ' Connect Google Calendar from the Dashboard first.'
+            : ''}
+        </p>
+      )}
+
       <div className="bg-white border rounded-lg p-4 mb-6 max-w-lg">
         <h2 className="font-medium text-gray-900 mb-3">Link event to invoice</h2>
         <div className="grid grid-cols-2 gap-4">
@@ -187,8 +240,7 @@ export default function Associate() {
               <option value="">Select invoice...</option>
               {invoices.map((inv) => (
                 <option key={inv.external_order_id} value={inv.external_order_id}>
-                  {inv.customer_email || '—'} · Total: ${inv.amount}
-                  {inv.line_items_summary ? ` · ${inv.line_items_summary}` : ''}
+                  {inv.title || inv.line_items_summary || '—'} · ${inv.amount ?? '—'} · {inv.customer_email || '—'}
                 </option>
               ))}
               <option value={CREATE_CUSTOM_VALUE}>Create custom invoice</option>
