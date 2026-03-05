@@ -32,6 +32,7 @@ export const logout = () =>
   request('/api/auth/logout', { method: 'POST' });
 
 // Build query so "through end date" is end of that day in user's local timezone
+export const getCalendarList = () => request('/api/calendar/list');
 export const getEvents = (params) => {
   const { from, to, ...rest } = params;
   const sp = new URLSearchParams(rest);

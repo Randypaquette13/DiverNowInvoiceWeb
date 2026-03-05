@@ -22,6 +22,36 @@ async function getOAuth2Client(userId) {
   return { client: oauth2Client, calendarId: row.google_calendar_id || 'primary' };
 }
 
+calendarRouter.get('/list', async (req, res) => {
+  const userId = req.session.userId;
+  const auth = await getOAuth2Client(userId);
+  if (!auth) {
+    return res.json([]);
+  }
+  try {
+    const calendar = google.calendar({ version: 'v3', auth: auth.client });
+    const { data } = await calendar.calendarList.list({});
+    const items = (data.items || []).map((cal) => ({
+      id: cal.id,
+      summary: cal.summary || cal.id || 'Unnamed',
+      primary: cal.primary === true,
+    }));
+    res.json(items);
+  } catch (err) {
+    if (isInvalidGrant(err)) {
+      await pool.query(
+        'UPDATE user_integrations SET google_refresh_token = NULL, updated_at = NOW() WHERE user_id = $1',
+        [userId]
+      );
+      return res.status(401).json({
+        error: 'Google Calendar access expired or was revoked.',
+        code: 'google_reconnect',
+      });
+    }
+    throw err;
+  }
+});
+
 // Parse YYYY-MM-DD as start of day (UTC). For "to", use end of that day so the full day is included.
 function parseFromDate(str) {
   if (!str) return null;
@@ -50,12 +80,18 @@ calendarRouter.get('/events', async (req, res) => {
   }
   if (!fromDate) fromDate = parseFromDate(from) ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   if (!toDate) toDate = parseToDate(to) ?? new Date();
+  const { rows: integRows } = await pool.query(
+    'SELECT google_calendar_id FROM user_integrations WHERE user_id = $1 LIMIT 1',
+    [userId]
+  );
+  const selectedCalendarId = integRows[0]?.google_calendar_id || 'primary';
   const { rows } = await pool.query(
     `SELECT id, user_id, external_id, title, start_at, end_at, synced_at
      FROM calendar_events
      WHERE user_id = $1 AND start_at >= $2 AND start_at <= $3
+       AND (source_calendar_id = $4 OR (source_calendar_id IS NULL AND $4 = 'primary'))
      ORDER BY start_at ASC`,
-    [userId, fromDate, toDate]
+    [userId, fromDate, toDate, selectedCalendarId]
   );
   res.json(rows);
 });
@@ -115,13 +151,13 @@ calendarRouter.post('/sync', async (req, res) => {
       if (!start) continue;
       const recurringEventId = ev.recurringEventId || null;
       const { rows: upsertRows } = await pool.query(
-      `INSERT INTO calendar_events (user_id, external_id, title, start_at, end_at, raw_json, recurring_event_id, synced_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      `INSERT INTO calendar_events (user_id, external_id, title, start_at, end_at, raw_json, recurring_event_id, source_calendar_id, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
        ON CONFLICT (user_id, external_id) DO UPDATE SET
          title = EXCLUDED.title, start_at = EXCLUDED.start_at, end_at = EXCLUDED.end_at,
-         raw_json = EXCLUDED.raw_json, recurring_event_id = EXCLUDED.recurring_event_id, synced_at = NOW()
+         raw_json = EXCLUDED.raw_json, recurring_event_id = EXCLUDED.recurring_event_id, source_calendar_id = EXCLUDED.source_calendar_id, synced_at = NOW()
        RETURNING id`,
-        [userId, ev.id, ev.summary || ev.title || '', new Date(start), end ? new Date(end) : null, JSON.stringify(ev), recurringEventId]
+        [userId, ev.id, ev.summary || ev.title || '', new Date(start), end ? new Date(end) : null, JSON.stringify(ev), recurringEventId, auth.calendarId]
       );
       const calendarEventId = upsertRows[0]?.id;
       if (calendarEventId && recurringEventId) {

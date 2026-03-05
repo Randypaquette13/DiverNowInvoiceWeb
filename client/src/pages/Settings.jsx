@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { getIntegrations, updateIntegrations, getSquareLocations } from '../api';
+import { getIntegrations, updateIntegrations, getSquareLocations, getCalendarList } from '../api';
 
 export default function Settings() {
   const queryClient = useQueryClient();
@@ -13,6 +13,12 @@ export default function Settings() {
     queryFn: getIntegrations,
   });
 
+  const { data: calendarList = [] } = useQuery({
+    queryKey: ['calendar-list'],
+    queryFn: getCalendarList,
+    enabled: Boolean(integrations?.google_connected),
+  });
+
   const { data: locations = [], refetch: refetchLocations } = useQuery({
     queryKey: ['square-locations'],
     queryFn: getSquareLocations,
@@ -21,8 +27,11 @@ export default function Settings() {
 
   const updateMutation = useMutation({
     mutationFn: updateIntegrations,
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      if (variables?.google_calendar_id !== undefined) {
+        queryClient.invalidateQueries({ queryKey: ['events'] });
+      }
       setSaveMessage('Saved.');
       setTimeout(() => setSaveMessage(''), 3000);
     },
@@ -30,6 +39,15 @@ export default function Settings() {
       setSaveMessage(err.body?.error || err.message || 'Save failed');
     },
   });
+
+  const selectedCalendarId = integrations?.google_calendar_id ?? 'primary';
+
+  function handleCalendarChange(google_calendar_id) {
+    const id = google_calendar_id || 'primary';
+    if (id === selectedCalendarId) return;
+    setSaveMessage('');
+    updateMutation.mutate({ google_calendar_id: id });
+  }
 
   function handleSquareSubmit(e) {
     e.preventDefault();
@@ -103,12 +121,38 @@ export default function Settings() {
           </button>
         </form>
       </div>
-      <div className="mt-6">
+      <div className="bg-white border rounded-lg p-6 max-w-md mb-6">
         <h2 className="font-medium text-gray-900 mb-2">Google Calendar</h2>
-        <p className="text-sm text-gray-600 mb-2">
-          Connect your Google account from the Dashboard by clicking &quot;Connect Google Calendar&quot;.
+        <p className="text-sm text-gray-600 mb-4">
+          Connect your Google account to sync events to the Dashboard. Choose which calendar to use; only that calendar&apos;s events will be shown.
         </p>
-        {integrations?.google_connected && (
+        <a
+          href="/api/auth/google"
+          className="inline-block px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 text-sm mb-4"
+        >
+          {integrations?.google_connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
+        </a>
+        {integrations?.google_connected && calendarList.length > 0 && (
+          <div className="mt-4">
+            <label className="block text-sm text-gray-700 mb-1">Calendar</label>
+            <select
+              value={selectedCalendarId}
+              onChange={(e) => handleCalendarChange(e.target.value)}
+              disabled={updateMutation.isPending}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+            >
+              {calendarList.map((cal) => (
+                <option key={cal.id} value={cal.id}>
+                  {cal.summary}{cal.primary ? ' (primary)' : ''}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Only events from the selected calendar are shown on the Dashboard.
+            </p>
+          </div>
+        )}
+        {integrations?.google_connected && calendarList.length === 0 && (
           <span className="text-sm text-green-600">Google Calendar connected</span>
         )}
       </div>

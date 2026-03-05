@@ -1,10 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import {
   getEvents,
   getCleaningRecords,
   getMappings,
   getSquareInvoices,
+  getIntegrations,
+  getCalendarList,
   syncCalendar,
   syncSquareInvoices,
   upsertCleaningRecord,
@@ -30,6 +33,7 @@ export default function Dashboard() {
   const { data: events = [], isLoading: eventsLoading } = useQuery({
     queryKey: ['events', from, to],
     queryFn: () => getEvents({ from, to }),
+    refetchOnMount: 'always',
   });
 
   const { data: records = [] } = useQuery({
@@ -46,6 +50,22 @@ export default function Dashboard() {
     queryKey: ['square-invoices'],
     queryFn: getSquareInvoices,
   });
+
+  const { data: integrations } = useQuery({
+    queryKey: ['integrations'],
+    queryFn: getIntegrations,
+  });
+
+  const { data: calendarList = [] } = useQuery({
+    queryKey: ['calendar-list'],
+    queryFn: getCalendarList,
+    enabled: Boolean(integrations?.google_connected),
+  });
+
+  const selectedCalendarId = integrations?.google_calendar_id ?? 'primary';
+  const selectedCalendarLabel =
+    calendarList.find((cal) => cal.id === selectedCalendarId)?.summary ||
+    (selectedCalendarId === 'primary' ? 'Primary' : selectedCalendarId);
 
   const [syncError, setSyncError] = useState(null);
   const syncMutation = useMutation({
@@ -194,12 +214,14 @@ export default function Dashboard() {
           onChange={(e) => setTo(e.target.value)}
           className="border border-gray-300 rounded px-3 py-1"
         />
-        <a
-          href="/api/auth/google"
-          className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 text-sm"
-        >
-          Connect Google Calendar
-        </a>
+        {integrations?.google_connected && (
+          <span className="text-sm text-gray-600 flex items-center gap-1">
+            <span className="text-gray-400">Calendar:</span>
+            <Link to="/settings" className="text-blue-600 hover:underline" title="Change in Settings">
+              {selectedCalendarLabel}
+            </Link>
+          </span>
+        )}
         {syncMutation.isPending && (
           <span className="text-sm text-gray-500">Syncing calendar…</span>
         )}
@@ -207,13 +229,13 @@ export default function Dashboard() {
       {syncError && (
         <p className="mb-4 text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 text-sm">
           {syncError}
-          {syncError.includes('expired') || syncError.includes('revoked') ? ' Use “Connect Google Calendar” above to reconnect.' : ''}
+          {syncError.includes('expired') || syncError.includes('revoked') ? ' Use “Connect Google Calendar” in Settings.' : ''}
         </p>
       )}
       {eventsLoading || syncMutation.isPending ? (
         <p className="text-gray-500">Loading events…</p>
       ) : events.length === 0 ? (
-        <p className="text-gray-500">No events in this range. Connect Google Calendar or adjust dates.</p>
+        <p className="text-gray-500">No events in this range. Connect Google Calendar in Settings or adjust dates.</p>
       ) : (
         <ul className="space-y-4">
           {events.map((ev) => {

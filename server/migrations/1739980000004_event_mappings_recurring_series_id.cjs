@@ -1,12 +1,13 @@
 'use strict';
 
 exports.up = (pgm) => {
-  pgm.addColumn('event_invoice_mappings', {
-    recurring_series_id: { type: 'varchar(255)' },
-  });
-  pgm.createIndex('event_invoice_mappings', ['user_id', 'recurring_series_id'], {
-    name: 'event_invoice_mappings_user_recurring_series_idx',
-  });
+  pgm.sql(`
+    ALTER TABLE event_invoice_mappings ADD COLUMN IF NOT EXISTS recurring_series_id varchar(255);
+  `);
+  pgm.sql(`
+    CREATE INDEX IF NOT EXISTS event_invoice_mappings_user_recurring_series_idx
+    ON event_invoice_mappings (user_id, recurring_series_id);
+  `);
   // Backfill from linked calendar_event
   pgm.sql(`
     UPDATE event_invoice_mappings m
@@ -18,8 +19,6 @@ exports.up = (pgm) => {
 };
 
 exports.down = (pgm) => {
-  pgm.dropIndex('event_invoice_mappings', ['user_id', 'recurring_series_id'], {
-    name: 'event_invoice_mappings_user_recurring_series_idx',
-  });
+  pgm.sql(`DROP INDEX IF EXISTS event_invoice_mappings_user_recurring_series_idx;`);
   pgm.dropColumn('event_invoice_mappings', 'recurring_series_id');
 };
