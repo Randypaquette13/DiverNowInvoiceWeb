@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getEvents,
@@ -30,6 +30,11 @@ export default function Associate() {
     return d.toISOString().slice(0, 10);
   });
   const [invoiceSearch, setInvoiceSearch] = useState('');
+  const [invoiceDropdownOpen, setInvoiceDropdownOpen] = useState(false);
+  const invoiceDropdownRef = useRef(null);
+  const [eventSearch, setEventSearch] = useState('');
+  const [eventDropdownOpen, setEventDropdownOpen] = useState(false);
+  const eventDropdownRef = useRef(null);
 
   const { data: events = [] } = useQuery({
     queryKey: ['events', from, to],
@@ -73,6 +78,21 @@ export default function Associate() {
     calendarSyncMutation.mutate();
   }, [from, to]);
 
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (invoiceDropdownRef.current && !invoiceDropdownRef.current.contains(e.target)) {
+        setInvoiceDropdownOpen(false);
+      }
+      if (eventDropdownRef.current && !eventDropdownRef.current.contains(e.target)) {
+        setEventDropdownOpen(false);
+      }
+    }
+    if (invoiceDropdownOpen || eventDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [invoiceDropdownOpen, eventDropdownOpen]);
+
   const mappingByEvent = Object.fromEntries(
     mappings.map((m) => [m.calendar_event_id, m])
   );
@@ -87,6 +107,16 @@ export default function Associate() {
             (inv.title || '').toLowerCase().includes(invoiceSearchLower) ||
             (inv.customer_email || '').toLowerCase().includes(invoiceSearchLower)
         );
+
+  const eventSearchLower = eventSearch.trim().toLowerCase();
+  const filteredEvents =
+    !eventSearchLower
+      ? events
+      : events.filter((ev) => {
+          const title = (ev.title || 'Untitled').toLowerCase();
+          const dateStr = new Date(ev.start_at).toLocaleDateString().toLowerCase();
+          return title.includes(eventSearchLower) || dateStr.includes(eventSearchLower);
+        });
 
   const createMappingMutation = useMutation({
     mutationFn: createMapping,
@@ -225,47 +255,147 @@ export default function Associate() {
 
       <div className="bg-white border rounded-lg p-4 mb-6 max-w-lg">
         <h2 className="font-medium text-gray-900 mb-3">Link event to invoice</h2>
-        <div className="mb-4">
-          <label className="block text-sm text-gray-600 mb-1">Search invoices (title or email)</label>
-          <input
-            type="text"
-            value={invoiceSearch}
-            onChange={(e) => setInvoiceSearch(e.target.value)}
-            placeholder="Type to filter..."
-            className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-          />
-        </div>
         <div className="grid grid-cols-2 gap-4">
-          <div>
+          <div ref={eventDropdownRef} className="relative">
             <label className="block text-sm text-gray-600 mb-1">Event</label>
-            <select
-              value={selectedEventId}
-              onChange={(e) => setSelectedEventId(e.target.value)}
-              className="w-full border border-gray-300 rounded px-3 py-2"
-            >
-              <option value="">Select event...</option>
-              {events.map((ev) => (
-                <option key={ev.id} value={ev.id}>
-                  {ev.title || 'Untitled'} ({new Date(ev.start_at).toLocaleDateString()})
-                </option>
-              ))}
-            </select>
+            {eventDropdownOpen ? (
+              <input
+                type="text"
+                value={eventSearch}
+                onChange={(e) => setEventSearch(e.target.value)}
+                placeholder="Type to search by title or date..."
+                className="w-full border border-gray-300 rounded px-3 py-2 bg-white"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setEventDropdownOpen(false);
+                    setEventSearch('');
+                  }
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEventDropdownOpen(true)}
+                className="w-full border border-gray-300 rounded px-3 py-2 text-left flex items-center justify-between bg-white"
+              >
+                <span className="truncate">
+                  {!selectedEventId
+                    ? 'Select event...'
+                    : (() => {
+                        const ev = events.find((e) => e.id === Number(selectedEventId));
+                        return ev
+                          ? `${ev.title || 'Untitled'} (${new Date(ev.start_at).toLocaleDateString()})`
+                          : selectedEventId;
+                      })()}
+                </span>
+                <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
+            {eventDropdownOpen && (
+              <div className="absolute z-10 mt-1 w-full border border-gray-300 rounded bg-white shadow-lg max-h-72 overflow-y-auto">
+                <ul className="py-1">
+                  {filteredEvents.map((ev) => (
+                    <li key={ev.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedEventId(String(ev.id));
+                          setEventDropdownOpen(false);
+                          setEventSearch('');
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 truncate"
+                      >
+                        {ev.title || 'Untitled'} ({new Date(ev.start_at).toLocaleDateString()})
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {filteredEvents.length === 0 && events.length > 0 && (
+                  <p className="px-3 py-2 text-sm text-gray-500">No events match your search.</p>
+                )}
+              </div>
+            )}
           </div>
-          <div>
+          <div ref={invoiceDropdownRef} className="relative">
             <label className="block text-sm text-gray-600 mb-1">Invoice</label>
-            <select
-              value={selectedInvoiceId}
-              onChange={(e) => handleInvoiceChange(e.target.value)}
-              className="w-full border border-gray-300 rounded px-3 py-2"
-            >
-              <option value="">Select invoice...</option>
-              {filteredInvoices.map((inv) => (
-                <option key={inv.external_order_id} value={inv.external_order_id}>
-                  {inv.title || inv.line_items_summary || '—'} · ${inv.amount ?? '—'} · {inv.customer_email || '—'}
-                </option>
-              ))}
-              <option value={CREATE_CUSTOM_VALUE}>Create custom invoice</option>
-            </select>
+            {invoiceDropdownOpen ? (
+              <input
+                type="text"
+                value={invoiceSearch}
+                onChange={(e) => setInvoiceSearch(e.target.value)}
+                placeholder="Type to search by title or email..."
+                className="w-full border border-gray-300 rounded px-3 py-2 bg-white"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setInvoiceDropdownOpen(false);
+                    setInvoiceSearch('');
+                  }
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setInvoiceDropdownOpen(true)}
+                className="w-full border border-gray-300 rounded px-3 py-2 text-left flex items-center justify-between bg-white"
+              >
+                <span className="truncate">
+                  {!selectedInvoiceId
+                    ? 'Select invoice...'
+                    : selectedInvoiceId === CREATE_CUSTOM_VALUE
+                      ? 'Create custom invoice'
+                      : (() => {
+                          const inv = invoices.find((i) => i.external_order_id === selectedInvoiceId);
+                          return inv
+                            ? `${inv.title || inv.line_items_summary || '—'} · $${inv.amount ?? '—'} · ${inv.customer_email || '—'}`
+                            : selectedInvoiceId;
+                        })()}
+                </span>
+                <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
+            {invoiceDropdownOpen && (
+              <div className="absolute z-10 mt-1 w-full border border-gray-300 rounded bg-white shadow-lg max-h-72 overflow-y-auto">
+                <ul className="py-1">
+                  {filteredInvoices.map((inv) => (
+                    <li key={inv.external_order_id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleInvoiceChange(inv.external_order_id);
+                          setInvoiceDropdownOpen(false);
+                          setInvoiceSearch('');
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 truncate"
+                      >
+                        {inv.title || inv.line_items_summary || '—'} · ${inv.amount ?? '—'} · {inv.customer_email || '—'}
+                      </button>
+                    </li>
+                  ))}
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleInvoiceChange(CREATE_CUSTOM_VALUE);
+                        setInvoiceDropdownOpen(false);
+                        setInvoiceSearch('');
+                      }}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 font-medium text-gray-700"
+                    >
+                      Create custom invoice
+                    </button>
+                  </li>
+                </ul>
+                {filteredInvoices.length === 0 && invoices.length > 0 && (
+                  <p className="px-3 py-2 text-sm text-gray-500">No invoices match your search.</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
         {selectedInvoiceId && selectedInvoiceId !== CREATE_CUSTOM_VALUE && (
