@@ -29,6 +29,7 @@ export default function Associate() {
     d.setDate(d.getDate() + 7);
     return d.toISOString().slice(0, 10);
   });
+  const [invoiceSearch, setInvoiceSearch] = useState('');
 
   const { data: events = [] } = useQuery({
     queryKey: ['events', from, to],
@@ -76,6 +77,16 @@ export default function Associate() {
     mappings.map((m) => [m.calendar_event_id, m])
   );
   const mappedInvoiceIds = new Set(mappings.map((m) => m.order_id));
+
+  const invoiceSearchLower = invoiceSearch.trim().toLowerCase();
+  const filteredInvoices =
+    !invoiceSearchLower
+      ? invoices
+      : invoices.filter(
+          (inv) =>
+            (inv.title || '').toLowerCase().includes(invoiceSearchLower) ||
+            (inv.customer_email || '').toLowerCase().includes(invoiceSearchLower)
+        );
 
   const createMappingMutation = useMutation({
     mutationFn: createMapping,
@@ -214,6 +225,16 @@ export default function Associate() {
 
       <div className="bg-white border rounded-lg p-4 mb-6 max-w-lg">
         <h2 className="font-medium text-gray-900 mb-3">Link event to invoice</h2>
+        <div className="mb-4">
+          <label className="block text-sm text-gray-600 mb-1">Search invoices (title or email)</label>
+          <input
+            type="text"
+            value={invoiceSearch}
+            onChange={(e) => setInvoiceSearch(e.target.value)}
+            placeholder="Type to filter..."
+            className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+          />
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm text-gray-600 mb-1">Event</label>
@@ -238,7 +259,7 @@ export default function Associate() {
               className="w-full border border-gray-300 rounded px-3 py-2"
             >
               <option value="">Select invoice...</option>
-              {invoices.map((inv) => (
+              {filteredInvoices.map((inv) => (
                 <option key={inv.external_order_id} value={inv.external_order_id}>
                   {inv.title || inv.line_items_summary || '—'} · ${inv.amount ?? '—'} · {inv.customer_email || '—'}
                 </option>
@@ -290,7 +311,7 @@ export default function Associate() {
       <div className="bg-white border rounded-lg p-4 max-w-2xl">
         <h2 className="font-medium text-gray-900 mb-3">All invoices (total and line items)</h2>
         <ul className="space-y-2">
-          {invoices.map((inv) => (
+          {filteredInvoices.map((inv) => (
             <li
               key={inv.external_order_id}
               className="p-3 bg-white border rounded flex justify-between items-center"
@@ -309,9 +330,11 @@ export default function Associate() {
               )}
             </li>
           ))}
-          {invoices.length === 0 && (
+          {filteredInvoices.length === 0 && (
             <li className="text-sm text-gray-500">
-              No invoices yet. Add your Square access token and location in Settings and click Load invoices from Square.
+              {invoices.length === 0
+                ? 'No invoices yet. Add your Square access token and location in Settings and click Load invoices from Square.'
+                : 'No invoices match your search.'}
             </li>
           )}
         </ul>

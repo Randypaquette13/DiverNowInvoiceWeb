@@ -74,7 +74,7 @@ function invoiceToCustomerEmail(invoice) {
 export const squareRouter = Router();
 squareRouter.use(requireAuth);
 
-// Sync: load invoices from Square Invoices API (GET /v2/invoices), upsert into square_orders
+// Sync: load invoices from Square Invoices API (GET /v2/invoices), upsert into square_orders (per user)
 squareRouter.post('/sync', async (req, res) => {
   const userId = req.session.userId;
   const { token, locationId } = await getSquareCreds(userId);
@@ -105,8 +105,9 @@ squareRouter.post('/sync', async (req, res) => {
     cursor = data.cursor || null;
     if (!cursor) break;
   }
-  const draftOnly = allInvoices.filter((inv) => inv.status === 'DRAFT');
-  for (const inv of draftOnly) {
+  const allowedStatuses = new Set(['DRAFT', 'PAID', 'UNPAID']);
+  const toSync = allInvoices.filter((inv) => allowedStatuses.has(inv.status));
+  for (const inv of toSync) {
     if (!inv.id) continue;
     const amount = invoiceToAmount(inv);
     const customerEmail = invoiceToCustomerEmail(inv);
@@ -132,7 +133,7 @@ squareRouter.post('/sync', async (req, res) => {
       [userId, invToStore.id, customerEmail, amount, summary, JSON.stringify(invToStore)]
     );
   }
-  res.json({ synced: draftOnly.length });
+  res.json({ synced: toSync.length });
 });
 
 squareRouter.get('/invoices', async (req, res) => {
@@ -140,16 +141,17 @@ squareRouter.get('/invoices', async (req, res) => {
   const { rows } = await pool.query(
     `SELECT id, user_id, external_order_id, customer_email, amount, line_items_summary, synced_at, raw_json
      FROM square_orders
-     WHERE user_id = $1 AND (raw_json->>'status' IS NULL OR raw_json->>'status' = 'DRAFT')
+     WHERE user_id = $1
      ORDER BY synced_at DESC`,
     [userId]
   );
-  const list = rows.map((r) => {
+  // Defensive: only return rows for this user (per-account isolation)
+  const ownRows = rows.filter((r) => Number(r.user_id) === Number(userId));
+  const list = ownRows.map((r) => {
     const recipient = r.raw_json?.primary_recipient;
     const customerName = [recipient?.given_name, recipient?.family_name].filter(Boolean).join(' ') || null;
     const out = {
       id: r.id,
-      user_id: r.user_id,
       external_order_id: r.external_order_id,
       customer_email: r.customer_email,
       customer_name: customerName,
@@ -186,6 +188,65 @@ squareRouter.get('/invoices/:id', async (req, res) => {
   if (!rows[0]) return res.status(404).json({ error: 'Invoice not found' });
   const raw = rows[0].raw_json || {};
   res.json(raw);
+});
+
+// Update invoice title (Square + local square_orders)
+squareRouter.patch('/invoices/:id', async (req, res) => {
+  const userId = req.session.userId;
+  const { id } = req.params;
+  const { title } = req.body;
+  if (title == null || typeof title !== 'string') {
+    return res.status(400).json({ error: 'title (string) required' });
+  }
+  const trimmed = title.trim().slice(0, 255);
+  const { rows } = await pool.query(
+    'SELECT raw_json FROM square_orders WHERE user_id = $1 AND external_order_id = $2',
+    [userId, id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Invoice not found' });
+  const { token } = await getSquareCreds(userId);
+  if (!token) return res.status(400).json({ error: 'Square not configured' });
+  const base = getSquareBaseUrl();
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'Square-Version': SQUARE_VERSION,
+  };
+  const getRes = await fetch(`${base}/v2/invoices/${id}`, { headers });
+  if (!getRes.ok) {
+    const text = await getRes.text();
+    return res.status(getRes.status).json({ error: 'Square API error', detail: text });
+  }
+  const getData = await getRes.json();
+  if (getData.errors?.length) {
+    return res.status(400).json({ error: 'Square API error', detail: getData.errors });
+  }
+  const invoice = getData.invoice;
+  const version = invoice?.version;
+  if (version == null) {
+    return res.status(400).json({ error: 'Square invoice missing version' });
+  }
+  const putRes = await fetch(`${base}/v2/invoices/${id}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      invoice: { version: Number(version), title: trimmed || undefined },
+    }),
+  });
+  if (!putRes.ok) {
+    const text = await putRes.text();
+    return res.status(putRes.status).json({ error: 'Square API error', detail: text });
+  }
+  const putData = await putRes.json();
+  if (putData.errors?.length) {
+    return res.status(400).json({ error: 'Square API error', detail: putData.errors });
+  }
+  const updatedRaw = { ...(rows[0].raw_json || {}), title: trimmed || null };
+  await pool.query(
+    `UPDATE square_orders SET raw_json = $3, synced_at = NOW() WHERE user_id = $1 AND external_order_id = $2`,
+    [userId, id, JSON.stringify(updatedRaw)]
+  );
+  res.json(putData.invoice || updatedRaw);
 });
 
 // List locations (for Settings: pick location_id)

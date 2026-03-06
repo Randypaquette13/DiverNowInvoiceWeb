@@ -85,6 +85,8 @@ export const createMapping = (data) =>
 export const deleteMapping = (id) =>
   request(`/api/mappings/${id}`, { method: 'DELETE' });
 export const getInvoiceById = (id) => request(`/api/square/invoices/${id}`);
+export const updateInvoiceTitle = (id, title) =>
+  request(`/api/square/invoices/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) });
 export const createInvoice = (payload) =>
   request('/api/square/invoices/create', { method: 'POST', body: JSON.stringify(payload) });
 export const createInvoiceFromTemplate = (data) =>

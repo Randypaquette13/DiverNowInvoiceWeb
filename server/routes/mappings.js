@@ -8,7 +8,7 @@ mappingsRouter.use(requireAuth);
 mappingsRouter.get('/', async (req, res) => {
   const userId = req.session.userId;
   const { rows } = await pool.query(
-    `SELECT id, user_id, calendar_event_id, squarespace_order_id, square_order_id, created_at
+    `SELECT id, user_id, calendar_event_id, squarespace_order_id, square_order_id, recurring_series_id, created_at
      FROM event_invoice_mappings WHERE user_id = $1`,
     [userId]
   );
@@ -78,9 +78,51 @@ mappingsRouter.post('/', async (req, res) => {
 mappingsRouter.delete('/:id', async (req, res) => {
   const userId = req.session.userId;
   const { id } = req.params;
-  await pool.query(
-    'DELETE FROM event_invoice_mappings WHERE id = $1 AND user_id = $2',
+  const { rows: mappingRows } = await pool.query(
+    'SELECT calendar_event_id, recurring_series_id FROM event_invoice_mappings WHERE id = $1 AND user_id = $2',
     [id, userId]
   );
+  if (!mappingRows[0]) {
+    return res.status(404).json({ error: 'Mapping not found' });
+  }
+  const { calendar_event_id: calendarEventId, recurring_series_id: recurringSeriesId } = mappingRows[0];
+  if (recurringSeriesId) {
+    await pool.query(
+      'DELETE FROM event_invoice_mappings WHERE user_id = $1 AND recurring_series_id = $2',
+      [userId, recurringSeriesId]
+    );
+  } else {
+    // Same recurring event may have been linked before recurring_series_id existed; find by calendar event series
+    const { rows: eventRows } = await pool.query(
+      `SELECT recurring_event_id, raw_json->>'recurringEventId' AS series_id_from_raw
+       FROM calendar_events WHERE id = $1 AND user_id = $2`,
+      [calendarEventId, userId]
+    );
+    const seriesId = eventRows[0]?.recurring_event_id || eventRows[0]?.series_id_from_raw || null;
+    if (seriesId) {
+      const { rows: sameSeriesEvents } = await pool.query(
+        `SELECT id FROM calendar_events
+         WHERE user_id = $1 AND (recurring_event_id = $2 OR (raw_json IS NOT NULL AND raw_json->>'recurringEventId' = $2))`,
+        [userId, seriesId]
+      );
+      const eventIds = sameSeriesEvents.map((r) => r.id);
+      if (eventIds.length > 0) {
+        await pool.query(
+          'DELETE FROM event_invoice_mappings WHERE user_id = $1 AND calendar_event_id = ANY($2)',
+          [userId, eventIds]
+        );
+      } else {
+        await pool.query(
+          'DELETE FROM event_invoice_mappings WHERE id = $1 AND user_id = $2',
+          [id, userId]
+        );
+      }
+    } else {
+      await pool.query(
+        'DELETE FROM event_invoice_mappings WHERE id = $1 AND user_id = $2',
+        [id, userId]
+      );
+    }
+  }
   res.status(204).send();
 });

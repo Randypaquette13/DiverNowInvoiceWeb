@@ -13,6 +13,8 @@ import {
   upsertCleaningRecord,
   createInvoiceFromTemplate,
   createMapping,
+  deleteMapping,
+  updateInvoiceTitle,
 } from '../api';
 
 export default function Dashboard() {
@@ -29,6 +31,8 @@ export default function Dashboard() {
   const [sendInvoiceEventId, setSendInvoiceEventId] = useState(null);
   const [addExtraWorkEventId, setAddExtraWorkEventId] = useState(null);
   const [collapsedEventIds, setCollapsedEventIds] = useState(() => new Set());
+  const [editingTitleEventId, setEditingTitleEventId] = useState(null);
+  const [draftTitle, setDraftTitle] = useState('');
 
   const { data: events = [], isLoading: eventsLoading } = useQuery({
     queryKey: ['events', from, to],
@@ -125,6 +129,26 @@ export default function Dashboard() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mappings'] });
       setLinkEventId(null);
+    },
+  });
+
+  const deleteMappingMutation = useMutation({
+    mutationFn: deleteMapping,
+    onSuccess: async () => {
+      await queryClient.refetchQueries({ queryKey: ['mappings'] });
+    },
+  });
+
+  const updateTitleMutation = useMutation({
+    mutationFn: ({ invoiceId, title }) => updateInvoiceTitle(invoiceId, title),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['square-invoices'] });
+      setEditingTitleEventId(null);
+      setDraftTitle('');
+    },
+    onError: () => {
+      setEditingTitleEventId(null);
+      setDraftTitle('');
     },
   });
 
@@ -296,11 +320,27 @@ export default function Dashboard() {
                       <p className="font-medium text-gray-900">{ev.title || 'Untitled'}</p>
                       {isCollapsed ? (
                         <>
-                          <p className="text-sm text-slate-700 mt-0.5">{invoiceTitleStr}</p>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setCollapsedEventIds((prev) => {
+                                const next = new Set(prev);
+                                next.delete(ev.id);
+                                return next;
+                              });
+                              setEditingTitleEventId(ev.id);
+                              setDraftTitle((linkedInvoice.title || '').trim() || 'Boat Cleaning');
+                            }}
+                            className="text-sm text-slate-700 mt-0.5 text-left w-full hover:bg-slate-100 rounded px-1 -mx-1"
+                          >
+                            {invoiceTitleStr}
+                          </button>
                           <p className="text-sm font-semibold text-slate-900 mt-1">
                             Total: {formatDollars(totalAmount)}
                           </p>
-                          <div className="flex flex-wrap gap-2 mt-2">
+                          <div className="flex flex-wrap gap-2 mt-2 items-center">
                             {!isPending && (
                               <span
                                 className={`px-2 py-0.5 rounded text-xs ${
@@ -313,6 +353,17 @@ export default function Dashboard() {
                             {invoiceAlreadySent && (
                               <span className="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700">Invoice sent</span>
                             )}
+                            {mapping && (
+                              <button
+                                type="button"
+                                onClick={() => deleteMappingMutation.mutate(mapping.id)}
+                                disabled={deleteMappingMutation.isPending}
+                                className="text-xs text-slate-500 hover:text-red-600"
+                                title="Unlink invoice (all instances if recurring)"
+                              >
+                                Unlink
+                              </button>
+                            )}
                           </div>
                         </>
                       ) : (
@@ -322,8 +373,51 @@ export default function Dashboard() {
                           </p>
                           {linkedInvoice && (
                             <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md max-w-sm">
-                              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1.5">Invoice Preview</p>
-                              <p className="text-base font-semibold text-slate-900 mb-2">{invoiceTitleStr}</p>
+                              <div className="flex items-center justify-between gap-2 mb-1.5">
+                                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Invoice Preview</p>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteMappingMutation.mutate(mapping.id)}
+                                  disabled={deleteMappingMutation.isPending}
+                                  className="text-xs text-slate-500 hover:text-red-600 border border-slate-300 hover:border-red-400 rounded px-1.5 py-0.5"
+                                  title="Unlink invoice (all instances if recurring)"
+                                >
+                                  Unlink
+                                </button>
+                              </div>
+                              {editingTitleEventId === ev.id ? (
+                                <input
+                                  type="text"
+                                  value={draftTitle}
+                                  onChange={(e) => setDraftTitle(e.target.value)}
+                                  onBlur={() => {
+                                    const t = draftTitle.trim() || 'Boat Cleaning';
+                                    if (t !== ((linkedInvoice.title || '').trim() || 'Boat Cleaning')) {
+                                      updateTitleMutation.mutate({ invoiceId: linkedInvoice.external_order_id, title: t });
+                                    }
+                                    setEditingTitleEventId(null);
+                                    setDraftTitle('');
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') e.target.blur();
+                                  }}
+                                  className="text-base font-semibold text-slate-900 mb-2 w-full border border-slate-300 rounded px-2 py-1"
+                                  autoFocus
+                                />
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setEditingTitleEventId(ev.id);
+                                    setDraftTitle((linkedInvoice.title || '').trim() || 'Boat Cleaning');
+                                  }}
+                                  className="text-base font-semibold text-slate-900 mb-2 text-left w-full hover:bg-slate-100 rounded px-1 -mx-1"
+                                >
+                                  {invoiceTitleStr}
+                                </button>
+                              )}
                               {invoiceAlreadySent && (
                                 <p className="text-sm text-red-600 mb-2 font-semibold">Invoice already sent for this event.</p>
                               )}
@@ -603,15 +697,62 @@ export default function Dashboard() {
                   {invoiceError}
                 </div>
               )}
-              {linkedInvoice && ev && (
+              {linkedInvoice && ev && mapping && (
                 <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-md">
-                  <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1.5">Invoice preview</p>
-                  {(() => {
-                    const d = ev.start_at ? new Date(ev.start_at) : new Date();
-                    const dateStr = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
-                    const baseTitle = (linkedInvoice.title || '').trim() || 'Boat Cleaning';
-                    return <p className="text-base font-semibold text-slate-900 mb-2">{baseTitle} on {dateStr}</p>;
-                  })()}
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Invoice preview</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        deleteMappingMutation.mutate(mapping.id);
+                        setSendInvoiceEventId(null);
+                        setInvoiceError(null);
+                      }}
+                      disabled={deleteMappingMutation.isPending}
+                      className="text-xs text-slate-500 hover:text-red-600 border border-slate-300 hover:border-red-400 rounded px-1.5 py-0.5"
+                      title="Unlink invoice (all instances if recurring)"
+                    >
+                      Unlink
+                    </button>
+                  </div>
+                  {editingTitleEventId === ev.id ? (
+                    <>
+                      <input
+                        type="text"
+                        value={draftTitle}
+                        onChange={(e) => setDraftTitle(e.target.value)}
+                        onBlur={() => {
+                          const t = draftTitle.trim() || 'Boat Cleaning';
+                          if (t !== ((linkedInvoice.title || '').trim() || 'Boat Cleaning')) {
+                            updateTitleMutation.mutate({ invoiceId: linkedInvoice.external_order_id, title: t });
+                          }
+                          setEditingTitleEventId(null);
+                          setDraftTitle('');
+                        }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                        className="text-base font-semibold text-slate-900 mb-2 w-full border border-slate-300 rounded px-2 py-1"
+                        autoFocus
+                      />
+                      <p className="text-sm text-slate-600 mb-2">
+                        on {ev.start_at ? `${new Date(ev.start_at).getMonth() + 1}/${new Date(ev.start_at).getDate()}/${new Date(ev.start_at).getFullYear()}` : '—'}
+                      </p>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setEditingTitleEventId(ev.id);
+                        setDraftTitle((linkedInvoice.title || '').trim() || 'Boat Cleaning');
+                      }}
+                      className="text-left w-full block mb-2"
+                    >
+                      <span className="text-base font-semibold text-slate-900">
+                        {(linkedInvoice.title || '').trim() || 'Boat Cleaning'} on {ev.start_at ? `${new Date(ev.start_at).getMonth() + 1}/${new Date(ev.start_at).getDate()}/${new Date(ev.start_at).getFullYear()}` : '—'}
+                      </span>
+                    </button>
+                  )}
                   {(linkedInvoice.customer_name || linkedInvoice.customer_email) && (
                     <p className="text-sm text-slate-700 mb-2">
                       {linkedInvoice.customer_name && <span className="font-medium">{linkedInvoice.customer_name}</span>}

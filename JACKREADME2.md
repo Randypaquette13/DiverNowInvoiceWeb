@@ -39,6 +39,12 @@ Summary of everything Jack needs to know: API request/response changes, new quer
 
 ## 2. Mappings API
 
+### GET `/api/mappings`
+
+- **Response:** Now includes **`recurring_series_id`** per row (in addition to `id`, `calendar_event_id`, `square_order_id`, `squarespace_order_id`, `order_id` alias).
+
+---
+
 ### POST `/api/mappings`
 
 | Before | After |
@@ -50,15 +56,26 @@ Summary of everything Jack needs to know: API request/response changes, new quer
 
 ---
 
+### DELETE `/api/mappings/:id`
+
+| Before | After |
+|--------|--------|
+| Deleted only the mapping with that `id`. | **Unlink by recurring series:** If the mapping has **`recurring_series_id`** set, deletes **all** mappings for that user with that `recurring_series_id`. If **`recurring_series_id`** is null, looks up the event’s **`recurring_event_id`** (or `raw_json->>'recurringEventId'`); if present, finds all calendar events in that series and deletes **all** mappings for those event ids; otherwise deletes only that one mapping. |
+| — | **404** if no mapping found for that `id` and user: `{ error: "Mapping not found" }`. |
+
+- **Response:** 204 on success.
+
+---
+
 ## 3. Square API
 
 ### POST `/api/square/sync`
 
 | Before | After |
 |--------|--------|
-| Synced **all** invoices from Square. | Only syncs invoices where **`status === 'DRAFT'`**. |
+| Synced **all** invoices from Square. | Syncs only invoices where **`status`** is **`DRAFT`**, **`PAID`**, or **`UNPAID`**. |
 
-- **Response:** `{ synced: number }` — count is now **draft-only**.
+- **Response:** `{ synced: number }` — count of invoices synced (draft + paid + unpaid).
 
 ---
 
@@ -66,8 +83,18 @@ Summary of everything Jack needs to know: API request/response changes, new quer
 
 | Before | After |
 |--------|--------|
-| All rows from `square_orders` for user. | Filter: **`raw_json->>'status' IS NULL OR raw_json->>'status' = 'DRAFT'`** (only drafts or legacy rows without status). |
-| List items: `customer_email`, `customer_name`, `amount`, `line_items_summary`, `synced_at`, etc. | Each item **adds** **`title`**: `raw_json?.title || line_items_summary || null`. |
+| All rows from `square_orders` for user. | **No status filter** — returns all `square_orders` rows for the user. |
+| Response included `user_id` per item. | **Per-account isolation:** defensive filter so only rows for the session user are returned; **`user_id` is omitted** from each item. |
+| — | Each item includes **`title`**: `raw_json?.title || line_items_summary || null`. |
+
+---
+
+### PATCH `/api/square/invoices/:id` (new)
+
+- **Auth:** Required.
+- **Body:** `{ title: string }` (required). Trimmed and capped at 255 chars.
+- **Behavior:** Fetches current invoice from Square (for `version`), calls Square **PUT** `/v2/invoices/:id` with new title, then updates **`square_orders.raw_json`** for that user/invoice so list and preview stay in sync.
+- **Responses:** 400 if `title` missing or not string, or Square error; 404 if invoice not found for user; 200 with updated invoice (Square or local).
 
 ---
 
@@ -96,6 +123,7 @@ Summary of everything Jack needs to know: API request/response changes, new quer
 ## 5. Client API usage (for reference)
 
 - **`getCalendarList()`** — **New.** GET `/api/calendar/list`; returns list of calendars for dropdown.
+- **`updateInvoiceTitle(id, title)`** — **New.** PATCH `/api/square/invoices/:id` with `{ title }`; used to edit invoice title in preview.
 - **`getEvents(params)`** — Now sends **`fromDate`** and **`toDateEnd`** (ISO) when `from` and `to` are set, so “to” is end-of-day in local time.
 - **`syncCalendar(params)`** — Can take **`{ from, to }`**; sends **`fromDate`** and **`toDateEnd`** (with `toDateEnd` = start of **next** day so Google’s exclusive `timeMax` includes the last day).
 
@@ -104,7 +132,8 @@ Summary of everything Jack needs to know: API request/response changes, new quer
 ## 6. UI / product (for reference)
 
 - **Settings:** Google Calendar section now has **Connect / Reconnect** button and a **Calendar** dropdown (from `getCalendarList`). Saving **`google_calendar_id`** via `updateIntegrations`; only events from the selected calendar appear on the Dashboard. Copy updated to direct users to Settings for connecting.
-- **Dashboard:** **Connect Google Calendar** link removed. Shows **“Calendar: [name]”** (from `getIntegrations` + `getCalendarList`) as a link to **Settings**. Sync error and empty-state copy updated to say “in Settings”.
+- **Dashboard:** **Connect Google Calendar** link removed. Shows **“Calendar: [name]”** (from `getIntegrations` + `getCalendarList`) as a link to **Settings**. Sync error and empty-state copy updated to say “in Settings”. **Invoice preview:** Title is **editable** (click to edit, blur/Enter to save via `updateInvoiceTitle`); edit state is keyed by **event id** so only the clicked instance shows the input when there are multiple instances of a recurring event. **Unlink** button next to “Invoice Preview” (and in collapsed row and in Send invoice modal) calls `deleteMapping(mapping.id)`; after unlink, mappings are **refetched** so all instances update. Unlinking one instance of a recurring event unlinks all (server-side).
+- **Associate:** **Search bar** for invoices (filter by title or email); dropdown and “All invoices” list use **`filteredInvoices`**.
 
 ---
 
@@ -140,7 +169,10 @@ Summary of everything Jack needs to know: API request/response changes, new quer
 | GET calendar/events | Query: optional `fromDate`, `toDateEnd` (ISO); `to` = end of day. **Filter by** user’s **`google_calendar_id`** (`source_calendar_id` match or NULL when primary). |
 | POST calendar/sync | Body: optional `from`, `to`, `fromDate`, `toDateEnd`. Sets **`source_calendar_id`** on upsert. 401 + `code: 'google_reconnect'` on expired token. Auto-link recurring events to existing series mappings. |
 | PATCH integrations | **`google_calendar_id`** update does not delete calendar data; events filtered by selected calendar. |
+| GET mappings | Response includes `recurring_series_id`. |
 | POST mappings | 404 if event not found. Propagates link to all same-series events; sets `recurring_series_id`. |
-| POST square/sync | Only DRAFT invoices synced. |
-| GET square/invoices | Filter: drafts only. Response items include `title`. |
+| DELETE mappings/:id | 404 if not found. Unlinks by recurring series (all instances) when `recurring_series_id` set, else by event series or single mapping. |
+| POST square/sync | Syncs DRAFT, PAID, UNPAID. Per-user credentials. |
+| GET square/invoices | No status filter; per-user defensive filter; items omit `user_id`, include `title`. |
+| **PATCH square/invoices/:id** | **New.** Body `{ title }`. Updates Square + local `square_orders`. |
 | POST square/invoices/from-template | Invoice title is `"{baseTitle} on {dateStr}"`. |
