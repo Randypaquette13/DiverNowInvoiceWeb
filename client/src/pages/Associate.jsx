@@ -253,10 +253,10 @@ export default function Associate() {
         </p>
       )}
 
-      <div className="bg-white border rounded-lg p-4 mb-6 max-w-lg">
+      <div className="bg-white border rounded-lg p-4 mb-6 max-w-5xl">
         <h2 className="font-medium text-gray-900 mb-3">Link event to invoice</h2>
         <div className="grid grid-cols-2 gap-4">
-          <div ref={eventDropdownRef} className="relative">
+          <div ref={eventDropdownRef} className="relative min-w-0">
             <label className="block text-sm text-gray-600 mb-1">Event</label>
             {eventDropdownOpen ? (
               <input
@@ -277,9 +277,9 @@ export default function Associate() {
               <button
                 type="button"
                 onClick={() => setEventDropdownOpen(true)}
-                className="w-full border border-gray-300 rounded px-3 py-2 text-left flex items-center justify-between bg-white"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-left flex items-center justify-between gap-2 bg-white"
               >
-                <span className="truncate">
+                <span className="break-words min-w-0 text-left">
                   {!selectedEventId
                     ? 'Select event...'
                     : (() => {
@@ -295,7 +295,7 @@ export default function Associate() {
               </button>
             )}
             {eventDropdownOpen && (
-              <div className="absolute z-10 mt-1 w-full border border-gray-300 rounded bg-white shadow-lg max-h-72 overflow-y-auto">
+              <div className="absolute z-10 mt-1 w-full border border-gray-300 rounded bg-white shadow-lg max-h-72 overflow-y-auto min-w-[16rem]">
                 <ul className="py-1">
                   {filteredEvents.map((ev) => (
                     <li key={ev.id}>
@@ -306,7 +306,7 @@ export default function Associate() {
                           setEventDropdownOpen(false);
                           setEventSearch('');
                         }}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 truncate"
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 break-words"
                       >
                         {ev.title || 'Untitled'} ({new Date(ev.start_at).toLocaleDateString()})
                       </button>
@@ -319,7 +319,7 @@ export default function Associate() {
               </div>
             )}
           </div>
-          <div ref={invoiceDropdownRef} className="relative">
+          <div ref={invoiceDropdownRef} className="relative min-w-0">
             <label className="block text-sm text-gray-600 mb-1">Invoice</label>
             {invoiceDropdownOpen ? (
               <input
@@ -340,9 +340,9 @@ export default function Associate() {
               <button
                 type="button"
                 onClick={() => setInvoiceDropdownOpen(true)}
-                className="w-full border border-gray-300 rounded px-3 py-2 text-left flex items-center justify-between bg-white"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-left flex items-center justify-between gap-2 bg-white"
               >
-                <span className="truncate">
+                <span className="break-words min-w-0 text-left">
                   {!selectedInvoiceId
                     ? 'Select invoice...'
                     : selectedInvoiceId === CREATE_CUSTOM_VALUE
@@ -360,7 +360,7 @@ export default function Associate() {
               </button>
             )}
             {invoiceDropdownOpen && (
-              <div className="absolute z-10 mt-1 w-full border border-gray-300 rounded bg-white shadow-lg max-h-72 overflow-y-auto">
+              <div className="absolute z-10 mt-1 w-full border border-gray-300 rounded bg-white shadow-lg max-h-72 overflow-y-auto min-w-[16rem]">
                 <ul className="py-1">
                   {filteredInvoices.map((inv) => (
                     <li key={inv.external_order_id}>
@@ -371,7 +371,7 @@ export default function Associate() {
                           setInvoiceDropdownOpen(false);
                           setInvoiceSearch('');
                         }}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 truncate"
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 break-words"
                       >
                         {inv.title || inv.line_items_summary || '—'} · ${inv.amount ?? '—'} · {inv.customer_email || '—'}
                       </button>
@@ -410,17 +410,17 @@ export default function Associate() {
         )}
       </div>
 
-      <div className="bg-white border rounded-lg p-4 mb-6 max-w-2xl">
+      <div className="bg-white border rounded-lg p-4 mb-6 max-w-5xl">
         <h2 className="font-medium text-gray-900 mb-3">Events and linked invoices</h2>
         <ul className="space-y-2">
           {events.map((ev) => {
             const mapping = mappingByEvent[ev.id];
             const invoice = mapping && invoices.find((i) => i.external_order_id === mapping.order_id);
             return (
-              <li key={ev.id} className="p-3 bg-gray-50 rounded flex justify-between items-center">
-                <span>{ev.title || 'Untitled'} ({new Date(ev.start_at).toLocaleDateString()})</span>
+              <li key={ev.id} className="p-3 bg-gray-50 rounded flex justify-between items-center gap-3">
+                <span className="break-words min-w-0">{ev.title || 'Untitled'} ({new Date(ev.start_at).toLocaleDateString()})</span>
                 {invoice ? (
-                  <span className="text-sm text-gray-600">
+                  <span className="text-sm text-gray-600 break-words min-w-0 text-right">
                     Total: ${invoice.amount}
                     {invoice.sales_line_items?.length > 0 && (
                       <span className="ml-2">· {formatSalesLineItems(invoice.sales_line_items)}</span>
@@ -438,19 +438,19 @@ export default function Associate() {
         </ul>
       </div>
 
-      <div className="bg-white border rounded-lg p-4 max-w-2xl">
+      <div className="bg-white border rounded-lg p-4 max-w-5xl">
         <h2 className="font-medium text-gray-900 mb-3">All invoices (total and line items)</h2>
         <ul className="space-y-2">
           {filteredInvoices.map((inv) => (
             <li
               key={inv.external_order_id}
-              className="p-3 bg-white border rounded flex justify-between items-center"
+              className="p-3 bg-white border rounded flex justify-between items-center gap-3"
             >
-              <div>
+              <div className="break-words min-w-0">
                 <span className="font-medium">{inv.customer_email || 'No email'}</span>
                 <span className="ml-2 text-gray-600">Total: ${inv.amount}</span>
               </div>
-              <div className="text-sm text-gray-600">
+              <div className="text-sm text-gray-600 break-words min-w-0 text-right">
                 {inv.sales_line_items?.length > 0
                   ? formatSalesLineItems(inv.sales_line_items)
                   : inv.line_items_summary || '—'}
