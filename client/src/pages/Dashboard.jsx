@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useCalendarRange } from '../context/CalendarRangeContext';
+import { useInvoiceSync } from '../context/InvoiceSyncContext';
 import {
   getEvents,
   getCleaningRecords,
@@ -21,6 +22,7 @@ import {
 export default function Dashboard() {
   const queryClient = useQueryClient();
   const { from, setFrom, to, setTo } = useCalendarRange();
+  const { setInvoiceSyncPending } = useInvoiceSync();
   const [linkEventId, setLinkEventId] = useState(null);
   const [customInvoiceEventId, setCustomInvoiceEventId] = useState(null);
   const [extraWorkItems, setExtraWorkItems] = useState([]); // [{ title, value }, ...] for Add extra work modal
@@ -75,6 +77,8 @@ export default function Dashboard() {
         syncSquareInvoices(),
       ]);
     },
+    onMutate: () => setInvoiceSyncPending(true),
+    onSettled: () => setInvoiceSyncPending(false),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['events'] });
       queryClient.invalidateQueries({ queryKey: ['mappings'] });
@@ -91,6 +95,7 @@ export default function Dashboard() {
   });
 
   useEffect(() => {
+    if (syncMutation.isPending) return;
     syncMutation.mutate({ from, to });
   }, [from, to]);
 

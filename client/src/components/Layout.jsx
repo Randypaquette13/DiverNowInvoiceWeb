@@ -2,6 +2,7 @@ import { Outlet, NavLink } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { logout } from '../api';
 import { CalendarRangeProvider } from '../context/CalendarRangeContext';
+import { InvoiceSyncProvider } from '../context/InvoiceSyncContext';
 
 export default function Layout() {
   const queryClient = useQueryClient();
@@ -59,7 +60,9 @@ export default function Layout() {
       </nav>
       <main className="p-6">
         <CalendarRangeProvider>
-          <Outlet />
+          <InvoiceSyncProvider>
+            <Outlet />
+          </InvoiceSyncProvider>
         </CalendarRangeProvider>
       </main>
     </div>

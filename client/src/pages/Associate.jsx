@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useCalendarRange } from '../context/CalendarRangeContext';
+import { useInvoiceSync } from '../context/InvoiceSyncContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getEvents,
@@ -16,6 +17,7 @@ const CREATE_CUSTOM_VALUE = '__create_custom__';
 export default function Associate() {
   const queryClient = useQueryClient();
   const { from, setFrom, to, setTo } = useCalendarRange();
+  const { invoiceSyncPending, setInvoiceSyncPending } = useInvoiceSync();
   const [selectedEventId, setSelectedEventId] = useState('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
   const [syncError, setSyncError] = useState('');
@@ -47,6 +49,8 @@ export default function Associate() {
 
   const syncMutation = useMutation({
     mutationFn: syncSquareInvoices,
+    onMutate: () => setInvoiceSyncPending(true),
+    onSettled: () => setInvoiceSyncPending(false),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['square-invoices'] });
       setSyncError('');
@@ -207,10 +211,10 @@ export default function Associate() {
           setSyncError('');
           syncMutation.mutate();
         }}
-        disabled={syncMutation.isPending}
-        className="mb-6 px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 text-sm"
+        disabled={syncMutation.isPending || invoiceSyncPending}
+        className="mb-6 px-4 py-2 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-60 disabled:cursor-not-allowed text-sm"
       >
-        {syncMutation.isPending ? 'Loading...' : 'Load invoices from Square'}
+        {syncMutation.isPending || invoiceSyncPending ? 'Loading...' : 'Load invoices from Square'}
       </button>
       {syncError && (
         <p className="mb-4 text-sm text-red-600" role="alert">{syncError}</p>
