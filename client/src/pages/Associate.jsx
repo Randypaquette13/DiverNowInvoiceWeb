@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useCalendarRange } from '../context/CalendarRangeContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getEvents,
@@ -14,6 +15,7 @@ const CREATE_CUSTOM_VALUE = '__create_custom__';
 
 export default function Associate() {
   const queryClient = useQueryClient();
+  const { from, setFrom, to, setTo } = useCalendarRange();
   const [selectedEventId, setSelectedEventId] = useState('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
   const [syncError, setSyncError] = useState('');
@@ -23,12 +25,6 @@ export default function Associate() {
   const [customTitle, setCustomTitle] = useState('Boat Cleaning');
   const [customAmount, setCustomAmount] = useState('');
   const [customEmail, setCustomEmail] = useState('');
-  const [from, setFrom] = useState(() => new Date().toISOString().slice(0, 10));
-  const [to, setTo] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 7);
-    return d.toISOString().slice(0, 10);
-  });
   const [invoiceSearch, setInvoiceSearch] = useState('');
   const [invoiceDropdownOpen, setInvoiceDropdownOpen] = useState(false);
   const invoiceDropdownRef = useRef(null);

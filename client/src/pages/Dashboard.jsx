@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { useCalendarRange } from '../context/CalendarRangeContext';
 import {
   getEvents,
   getCleaningRecords,
@@ -19,12 +20,7 @@ import {
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
-  const [from, setFrom] = useState(() => new Date().toISOString().slice(0, 10));
-  const [to, setTo] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 7);
-    return d.toISOString().slice(0, 10);
-  });
+  const { from, setFrom, to, setTo } = useCalendarRange();
   const [linkEventId, setLinkEventId] = useState(null);
   const [customInvoiceEventId, setCustomInvoiceEventId] = useState(null);
   const [extraWorkItems, setExtraWorkItems] = useState([]); // [{ title, value }, ...] for Add extra work modal
@@ -100,6 +96,10 @@ export default function Dashboard() {
 
   const recordsByEvent = Object.fromEntries(records.map((r) => [r.calendar_event_id, r]));
   const mappingByEvent = Object.fromEntries(mappings.map((m) => [m.calendar_event_id, m]));
+  const invoiceByOrderId = useMemo(
+    () => new Map(invoices.map((inv) => [inv.external_order_id, inv])),
+    [invoices]
+  );
 
   const updateRecordMutation = useMutation({
     mutationFn: upsertCleaningRecord,
@@ -247,7 +247,7 @@ export default function Dashboard() {
           </span>
         )}
         {syncMutation.isPending && (
-          <span className="text-sm text-gray-500">Syncing calendar…</span>
+          <span className="text-sm text-gray-500">Syncing calendar & invoices…</span>
         )}
       </div>
       {syncError && (
@@ -256,7 +256,7 @@ export default function Dashboard() {
           {syncError.includes('expired') || syncError.includes('revoked') ? ' Use “Connect Google Calendar” in Settings.' : ''}
         </p>
       )}
-      {eventsLoading || syncMutation.isPending ? (
+      {eventsLoading ? (
         <p className="text-gray-500">Loading events…</p>
       ) : events.length === 0 ? (
         <p className="text-gray-500">No events in this range. Connect Google Calendar in Settings or adjust dates.</p>
@@ -265,7 +265,7 @@ export default function Dashboard() {
           {events.map((ev) => {
             const record = recordsByEvent[ev.id];
             const mapping = mappingByEvent[ev.id];
-            const linkedInvoice = mapping && invoices.find((i) => i.external_order_id === mapping.order_id);
+            const linkedInvoice = mapping ? invoiceByOrderId.get(mapping.order_id) : null;
             const isPending = !record || record.status === 'pending';
             const isYes = record?.status === 'yes';
             const invoiceAlreadySent = Boolean(record?.square_order_id);
@@ -685,7 +685,7 @@ export default function Dashboard() {
         const ev = events.find((e) => e.id === sendInvoiceEventId);
         const record = ev ? recordsByEvent[ev.id] : null;
         const mapping = ev ? mappingByEvent[ev.id] : null;
-        const linkedInvoice = mapping && ev ? invoices.find((i) => i.external_order_id === mapping.order_id) : null;
+        const linkedInvoice = mapping && ev ? invoiceByOrderId.get(mapping.order_id) : null;
         const extraWorkLineItems = record ? parseExtraWorkItems(record.extra_work) : [];
         return (
           <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-20" onClick={() => setSendInvoiceEventId(null)}>
