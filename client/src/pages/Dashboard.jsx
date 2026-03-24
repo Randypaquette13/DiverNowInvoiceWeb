@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useCalendarRange } from '../context/CalendarRangeContext';
 import { useInvoiceSync } from '../context/InvoiceSyncContext';
@@ -31,6 +31,10 @@ export default function Dashboard() {
   const [collapsedEventIds, setCollapsedEventIds] = useState(() => new Set());
   const [editingTitleEventId, setEditingTitleEventId] = useState(null);
   const [draftTitle, setDraftTitle] = useState('');
+  const [invoiceTitleError, setInvoiceTitleError] = useState('');
+  const invoiceTitleInputRef = useRef(null);
+  /** Last title saved via PATCH per Square invoice id (covers Confirm before invoices query refetches). */
+  const lastSavedDisplayTitleByInvoiceId = useRef(new Map());
 
   const { data: events = [], isLoading: eventsLoading } = useQuery({
     queryKey: ['events', from, to],
@@ -144,18 +148,60 @@ export default function Dashboard() {
     },
   });
 
+  function parseInvoiceTitleUpdateError(err) {
+    let msg = err?.body?.detail || err?.body?.error || err?.message || 'Could not update title';
+    if (typeof msg === 'string') {
+      const t = msg.trim();
+      if ((t.startsWith('{') || t.startsWith('[')) && t.includes('errors')) {
+        try {
+          const j = JSON.parse(msg);
+          const inner = j.errors?.[0]?.detail || j.errors?.[0]?.code;
+          if (inner) return typeof inner === 'string' ? inner : JSON.stringify(inner);
+        } catch {
+          /* keep msg */
+        }
+      }
+    }
+    return typeof msg === 'string' ? msg : JSON.stringify(msg);
+  }
+
+  function cancelInvoiceTitleEdit() {
+    setInvoiceTitleError('');
+    setEditingTitleEventId(null);
+    setDraftTitle('');
+  }
+
   const updateTitleMutation = useMutation({
     mutationFn: ({ invoiceId, title }) => updateInvoiceTitle(invoiceId, title),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      if (variables?.invoiceId != null && variables?.title != null) {
+        lastSavedDisplayTitleByInvoiceId.current.set(
+          String(variables.invoiceId),
+          String(variables.title).trim()
+        );
+      }
       queryClient.invalidateQueries({ queryKey: ['square-invoices'] });
+      setInvoiceTitleError('');
       setEditingTitleEventId(null);
       setDraftTitle('');
     },
-    onError: () => {
-      setEditingTitleEventId(null);
-      setDraftTitle('');
+    onError: (err) => {
+      setInvoiceTitleError(parseInvoiceTitleUpdateError(err));
     },
   });
+
+  function commitInvoiceTitleEdit(linkedInvoice) {
+    const raw = invoiceTitleInputRef.current?.value ?? draftTitle;
+    const t = (typeof raw === 'string' ? raw : '').trim() || 'Boat Cleaning';
+    const orig = ((linkedInvoice.title || '').trim() || 'Boat Cleaning');
+    const willMutate = t !== orig;
+    setInvoiceTitleError('');
+    if (willMutate) {
+      updateTitleMutation.mutate({ invoiceId: linkedInvoice.external_order_id, title: t });
+    } else {
+      cancelInvoiceTitleEdit();
+    }
+  }
 
   function handleYesNo(eventId, status, notes = '', extraWork = '') {
     updateRecordMutation.mutate({
@@ -167,10 +213,23 @@ export default function Dashboard() {
   }
 
   function handleSendInvoice(evId) {
+    const mapping = mappingByEvent[evId];
+    const linked = mapping ? invoiceByOrderId.get(mapping.order_id) : null;
+    const orderKey = mapping?.order_id != null ? String(mapping.order_id) : '';
+    const fromCache = orderKey ? lastSavedDisplayTitleByInvoiceId.current.get(orderKey) : undefined;
+    let titleBase = '';
+    if (editingTitleEventId === evId && draftTitle.trim()) {
+      titleBase = draftTitle.trim();
+    } else if (fromCache) {
+      titleBase = fromCache;
+    } else {
+      titleBase = (linked?.title || '').trim();
+    }
     const items = parseExtraWorkItems(recordsByEvent[evId]?.extra_work);
     fromTemplateMutation.mutate({
       calendar_event_id: evId,
       extra_work_items: items.length > 0 ? items : undefined,
+      ...(titleBase ? { title_base: titleBase } : {}),
     });
   }
 
@@ -391,30 +450,62 @@ export default function Dashboard() {
                                 </button>
                               </div>
                               {editingTitleEventId === ev.id ? (
-                                <input
-                                  type="text"
-                                  value={draftTitle}
-                                  onChange={(e) => setDraftTitle(e.target.value)}
-                                  onBlur={() => {
-                                    const t = draftTitle.trim() || 'Boat Cleaning';
-                                    if (t !== ((linkedInvoice.title || '').trim() || 'Boat Cleaning')) {
-                                      updateTitleMutation.mutate({ invoiceId: linkedInvoice.external_order_id, title: t });
-                                    }
-                                    setEditingTitleEventId(null);
-                                    setDraftTitle('');
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') e.target.blur();
-                                  }}
-                                  className="text-base font-semibold text-slate-900 mb-2 w-full border border-slate-300 rounded px-2 py-1"
-                                  autoFocus
-                                />
+                                <div className="mb-2">
+                                  <div className="flex gap-1 items-stretch">
+                                    <input
+                                      ref={invoiceTitleInputRef}
+                                      type="text"
+                                      value={draftTitle}
+                                      onChange={(e) => setDraftTitle(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          commitInvoiceTitleEdit(linkedInvoice);
+                                        }
+                                        if (e.key === 'Escape') {
+                                          e.preventDefault();
+                                          cancelInvoiceTitleEdit();
+                                        }
+                                      }}
+                                      className="text-base font-semibold text-slate-900 flex-1 min-w-0 border border-slate-300 rounded px-2 py-1"
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      aria-label="Save title"
+                                      title="Save"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => commitInvoiceTitleEdit(linkedInvoice)}
+                                      disabled={updateTitleMutation.isPending}
+                                      className="shrink-0 px-2 py-1 rounded border border-emerald-600 bg-emerald-50 text-emerald-800 text-sm font-semibold hover:bg-emerald-100 disabled:opacity-50"
+                                    >
+                                      ✓
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label="Cancel title edit"
+                                      title="Cancel"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={cancelInvoiceTitleEdit}
+                                      disabled={updateTitleMutation.isPending}
+                                      className="shrink-0 px-2 py-1 rounded border border-slate-300 bg-white text-slate-600 text-sm hover:bg-slate-50 disabled:opacity-50"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                  {invoiceTitleError ? (
+                                    <p className="text-sm text-red-600 mt-1" role="alert">
+                                      {invoiceTitleError}
+                                    </p>
+                                  ) : null}
+                                </div>
                               ) : (
                                 <button
                                   type="button"
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
+                                    setInvoiceTitleError('');
                                     setEditingTitleEventId(ev.id);
                                     setDraftTitle((linkedInvoice.title || '').trim() || 'Boat Cleaning');
                                   }}
@@ -722,22 +813,55 @@ export default function Dashboard() {
                   </div>
                   {editingTitleEventId === ev.id ? (
                     <>
-                      <input
-                        type="text"
-                        value={draftTitle}
-                        onChange={(e) => setDraftTitle(e.target.value)}
-                        onBlur={() => {
-                          const t = draftTitle.trim() || 'Boat Cleaning';
-                          if (t !== ((linkedInvoice.title || '').trim() || 'Boat Cleaning')) {
-                            updateTitleMutation.mutate({ invoiceId: linkedInvoice.external_order_id, title: t });
-                          }
-                          setEditingTitleEventId(null);
-                          setDraftTitle('');
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
-                        className="text-base font-semibold text-slate-900 mb-2 w-full border border-slate-300 rounded px-2 py-1"
-                        autoFocus
-                      />
+                      <div className="mb-2">
+                        <div className="flex gap-1 items-stretch">
+                          <input
+                            ref={invoiceTitleInputRef}
+                            type="text"
+                            value={draftTitle}
+                            onChange={(e) => setDraftTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                commitInvoiceTitleEdit(linkedInvoice);
+                              }
+                              if (e.key === 'Escape') {
+                                e.preventDefault();
+                                cancelInvoiceTitleEdit();
+                              }
+                            }}
+                            className="text-base font-semibold text-slate-900 flex-1 min-w-0 border border-slate-300 rounded px-2 py-1"
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            aria-label="Save title"
+                            title="Save"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => commitInvoiceTitleEdit(linkedInvoice)}
+                            disabled={updateTitleMutation.isPending}
+                            className="shrink-0 px-2 py-1 rounded border border-emerald-600 bg-emerald-50 text-emerald-800 text-sm font-semibold hover:bg-emerald-100 disabled:opacity-50"
+                          >
+                            ✓
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="Cancel title edit"
+                            title="Cancel"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={cancelInvoiceTitleEdit}
+                            disabled={updateTitleMutation.isPending}
+                            className="shrink-0 px-2 py-1 rounded border border-slate-300 bg-white text-slate-600 text-sm hover:bg-slate-50 disabled:opacity-50"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        {invoiceTitleError ? (
+                          <p className="text-sm text-red-600 mt-1" role="alert">
+                            {invoiceTitleError}
+                          </p>
+                        ) : null}
+                      </div>
                       <p className="text-sm text-slate-600 mb-2">
                         on {ev.start_at ? `${new Date(ev.start_at).getMonth() + 1}/${new Date(ev.start_at).getDate()}/${new Date(ev.start_at).getFullYear()}` : '—'}
                       </p>
@@ -748,6 +872,7 @@ export default function Dashboard() {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        setInvoiceTitleError('');
                         setEditingTitleEventId(ev.id);
                         setDraftTitle((linkedInvoice.title || '').trim() || 'Boat Cleaning');
                       }}
@@ -812,7 +937,7 @@ export default function Dashboard() {
                 <button
                   type="button"
                   onClick={() => handleSendInvoice(sendInvoiceEventId)}
-                  disabled={fromTemplateMutation.isPending}
+                  disabled={fromTemplateMutation.isPending || updateTitleMutation.isPending}
                   className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
                 >
                   {fromTemplateMutation.isPending ? 'Confirming...' : 'Confirm'}

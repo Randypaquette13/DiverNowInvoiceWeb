@@ -129,7 +129,8 @@ squareRouter.post('/sync', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, NOW())
        ON CONFLICT (user_id, external_order_id) DO UPDATE SET
          customer_email = EXCLUDED.customer_email, amount = EXCLUDED.amount,
-         line_items_summary = EXCLUDED.line_items_summary, raw_json = EXCLUDED.raw_json, synced_at = NOW()`,
+         line_items_summary = EXCLUDED.line_items_summary, raw_json = EXCLUDED.raw_json, synced_at = NOW(),
+         display_title = square_orders.display_title`,
       [userId, invToStore.id, customerEmail, amount, summary, JSON.stringify(invToStore)]
     );
   }
@@ -139,7 +140,7 @@ squareRouter.post('/sync', async (req, res) => {
 squareRouter.get('/invoices', async (req, res) => {
   const userId = req.session.userId;
   const { rows } = await pool.query(
-    `SELECT id, user_id, external_order_id, customer_email, amount, line_items_summary, synced_at, raw_json
+    `SELECT id, user_id, external_order_id, customer_email, amount, line_items_summary, synced_at, raw_json, display_title
      FROM square_orders
      WHERE user_id = $1
      ORDER BY synced_at DESC`,
@@ -156,7 +157,7 @@ squareRouter.get('/invoices', async (req, res) => {
       customer_email: r.customer_email,
       customer_name: customerName,
       amount: r.amount,
-      title: r.raw_json?.title || r.line_items_summary || null,
+      title: r.display_title || r.raw_json?.title || r.line_items_summary || null,
       line_items_summary: r.line_items_summary,
       synced_at: r.synced_at,
     };
@@ -187,10 +188,12 @@ squareRouter.get('/invoices/:id', async (req, res) => {
   );
   if (!rows[0]) return res.status(404).json({ error: 'Invoice not found' });
   const raw = rows[0].raw_json || {};
-  res.json(raw);
+  const out = { ...raw };
+  if (rows[0].display_title) out.title = rows[0].display_title;
+  res.json(out);
 });
 
-// Update invoice title (Square + local square_orders)
+// Display title for this app only (Square UpdateInvoice re-validates payment_requests; we avoid PUT for renames).
 squareRouter.patch('/invoices/:id', async (req, res) => {
   const userId = req.session.userId;
   const { id } = req.params;
@@ -200,53 +203,23 @@ squareRouter.patch('/invoices/:id', async (req, res) => {
   }
   const trimmed = title.trim().slice(0, 255);
   const { rows } = await pool.query(
-    'SELECT raw_json FROM square_orders WHERE user_id = $1 AND external_order_id = $2',
+    'SELECT raw_json, display_title FROM square_orders WHERE user_id = $1 AND external_order_id = $2',
     [userId, id]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Invoice not found' });
-  const { token } = await getSquareCreds(userId);
-  if (!token) return res.status(400).json({ error: 'Square not configured' });
-  const base = getSquareBaseUrl();
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'Square-Version': SQUARE_VERSION,
-  };
-  const getRes = await fetch(`${base}/v2/invoices/${id}`, { headers });
-  if (!getRes.ok) {
-    const text = await getRes.text();
-    return res.status(getRes.status).json({ error: 'Square API error', detail: text });
-  }
-  const getData = await getRes.json();
-  if (getData.errors?.length) {
-    return res.status(400).json({ error: 'Square API error', detail: getData.errors });
-  }
-  const invoice = getData.invoice;
-  const version = invoice?.version;
-  if (version == null) {
-    return res.status(400).json({ error: 'Square invoice missing version' });
-  }
-  const putRes = await fetch(`${base}/v2/invoices/${id}`, {
-    method: 'PUT',
-    headers,
-    body: JSON.stringify({
-      invoice: { version: Number(version), title: trimmed || undefined },
-    }),
-  });
-  if (!putRes.ok) {
-    const text = await putRes.text();
-    return res.status(putRes.status).json({ error: 'Square API error', detail: text });
-  }
-  const putData = await putRes.json();
-  if (putData.errors?.length) {
-    return res.status(400).json({ error: 'Square API error', detail: putData.errors });
-  }
-  const updatedRaw = { ...(rows[0].raw_json || {}), title: trimmed || null };
+  const raw = rows[0].raw_json || {};
+  const squareTitle = ((raw.title ?? '') + '').trim();
+  const displayTitle = trimmed === '' ? null : trimmed === squareTitle ? null : trimmed;
   await pool.query(
-    `UPDATE square_orders SET raw_json = $3, synced_at = NOW() WHERE user_id = $1 AND external_order_id = $2`,
-    [userId, id, JSON.stringify(updatedRaw)]
+    `UPDATE square_orders SET display_title = $3, synced_at = NOW() WHERE user_id = $1 AND external_order_id = $2`,
+    [userId, id, displayTitle]
   );
-  res.json(putData.invoice || updatedRaw);
+  const responseTitle = displayTitle != null ? displayTitle : squareTitle;
+  res.json({
+    id,
+    title: responseTitle || null,
+    source: 'local_display_title',
+  });
 });
 
 // List locations (for Settings: pick location_id)
@@ -351,7 +324,9 @@ squareRouter.post('/invoices/create', async (req, res) => {
   await pool.query(
     `INSERT INTO square_orders (user_id, external_order_id, customer_email, amount, line_items_summary, raw_json, synced_at)
      VALUES ($1, $2, $3, $4, $5, $6, NOW())
-     ON CONFLICT (user_id, external_order_id) DO UPDATE SET raw_json = EXCLUDED.raw_json, synced_at = NOW()`,
+     ON CONFLICT (user_id, external_order_id) DO UPDATE SET
+       raw_json = EXCLUDED.raw_json, synced_at = NOW(),
+       display_title = square_orders.display_title`,
     [userId, invoice.id, customerEmail, amount, title, JSON.stringify(invoice)]
   );
   res.status(201).json(invoice);
@@ -360,7 +335,8 @@ squareRouter.post('/invoices/create', async (req, res) => {
 // Create invoice from template (existing invoice linked to event): fetch template's order from Square, create new order + invoice
 squareRouter.post('/invoices/from-template', async (req, res) => {
   const userId = req.session.userId;
-  const { calendar_event_id, extra_work_title, extra_work_value, extra_work_items } = req.body;
+  const { calendar_event_id, extra_work_title, extra_work_value, extra_work_items, title_base } =
+    req.body;
   if (!calendar_event_id) return res.status(400).json({ error: 'calendar_event_id required' });
   const { rows: mappingRows } = await pool.query(
     'SELECT square_order_id FROM event_invoice_mappings WHERE user_id = $1 AND calendar_event_id = $2 AND square_order_id IS NOT NULL',
@@ -370,10 +346,11 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
   if (!mapping) return res.status(400).json({ error: 'No invoice associated with this event. Link an invoice first.' });
 
   const { rows: templateRows } = await pool.query(
-    'SELECT raw_json FROM square_orders WHERE user_id = $1 AND external_order_id = $2',
+    'SELECT raw_json, display_title FROM square_orders WHERE user_id = $1 AND external_order_id = $2',
     [userId, mapping.square_order_id]
   );
-  const templateInvoice = templateRows[0]?.raw_json;
+  const templateRow = templateRows[0];
+  const templateInvoice = templateRow?.raw_json;
   if (!templateInvoice) return res.status(404).json({ error: 'Template invoice not found' });
 
   const { rows: eventRows } = await pool.query(
@@ -383,7 +360,12 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
   const event = eventRows[0];
   const eventDate = event?.start_at ? new Date(event.start_at) : new Date();
   const dateStr = `${eventDate.getMonth() + 1}/${eventDate.getDate()}/${eventDate.getFullYear()}`;
-  const baseTitle = (templateInvoice.title || '').trim() || 'Boat Cleaning';
+  const fromClient =
+    typeof title_base === 'string' ? title_base.trim().slice(0, 255) : '';
+  const fromDb =
+    ((templateRow?.display_title || templateInvoice.title || '') + '').trim() || 'Boat Cleaning';
+  // Client sends the title they see (avoids race if Confirm runs before PATCH persists display_title)
+  const baseTitle = (fromClient || fromDb).trim() || 'Boat Cleaning';
   const invoiceTitle = `${baseTitle} on ${dateStr}`;
   const { token, locationId } = await getSquareCreds(userId);
   if (!token || !locationId) return res.status(400).json({ error: 'Square not configured' });
@@ -522,7 +504,9 @@ squareRouter.post('/invoices/from-template', async (req, res) => {
   await pool.query(
     `INSERT INTO square_orders (user_id, external_order_id, customer_email, amount, line_items_summary, raw_json, synced_at)
      VALUES ($1, $2, $3, $4, $5, $6, NOW())
-     ON CONFLICT (user_id, external_order_id) DO UPDATE SET raw_json = EXCLUDED.raw_json, synced_at = NOW()`,
+     ON CONFLICT (user_id, external_order_id) DO UPDATE SET
+       raw_json = EXCLUDED.raw_json, synced_at = NOW(),
+       display_title = square_orders.display_title`,
     [userId, publishedInvoice.id, customerEmail, amount, publishedInvoice.title || invoiceTitle, JSON.stringify(publishedInvoice)]
   );
   res.status(201).json(publishedInvoice);
