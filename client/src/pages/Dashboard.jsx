@@ -110,6 +110,19 @@ export default function Dashboard() {
     [invoices]
   );
 
+  const eventIdsWithInvoicePreview = useMemo(() => {
+    const mapByEv = Object.fromEntries(mappings.map((m) => [m.calendar_event_id, m]));
+    const byOrder = new Map(invoices.map((inv) => [inv.external_order_id, inv]));
+    const ids = new Set();
+    for (const ev of events) {
+      const m = mapByEv[ev.id];
+      if (m?.order_id && byOrder.get(m.order_id)) {
+        ids.add(ev.id);
+      }
+    }
+    return ids;
+  }, [events, mappings, invoices]);
+
   const updateRecordMutation = useMutation({
     mutationFn: upsertCleaningRecord,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['cleanings'] }),
@@ -287,7 +300,7 @@ export default function Dashboard() {
   return (
     <div>
       <h1 className="text-2xl font-semibold text-gray-900 mb-4">Dashboard</h1>
-      <div className="flex gap-4 items-center mb-6">
+      <div className="flex flex-wrap gap-4 items-center mb-6">
         <label className="text-sm text-gray-600">From</label>
         <input
           type="date"
@@ -313,6 +326,14 @@ export default function Dashboard() {
         {syncMutation.isPending && (
           <span className="text-sm text-gray-500">Syncing calendar & invoices…</span>
         )}
+        <button
+          type="button"
+          onClick={() => setCollapsedEventIds(new Set(eventIdsWithInvoicePreview))}
+          disabled={eventIdsWithInvoicePreview.size === 0}
+          className="text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded px-3 py-1 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Collapse all
+        </button>
       </div>
       {syncError && (
         <p className="mb-4 text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 text-sm">
@@ -404,31 +425,6 @@ export default function Dashboard() {
                           <p className="text-sm font-semibold text-slate-900 mt-1">
                             Total: {formatDollars(totalAmount)}
                           </p>
-                          <div className="flex flex-wrap gap-2 mt-2 items-center">
-                            {!isPending && (
-                              <span
-                                className={`px-2 py-0.5 rounded text-xs ${
-                                  record?.status === 'yes' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'
-                                }`}
-                              >
-                                {record?.status === 'yes' ? 'Job Completed' : record?.status === 'no' ? 'Skipped' : record?.status}
-                              </span>
-                            )}
-                            {invoiceAlreadySent && (
-                              <span className="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700">Invoice sent</span>
-                            )}
-                            {mapping && (
-                              <button
-                                type="button"
-                                onClick={() => deleteMappingMutation.mutate(mapping.id)}
-                                disabled={deleteMappingMutation.isPending}
-                                className="text-xs text-slate-500 hover:text-red-600"
-                                title="Unlink invoice (all instances if recurring)"
-                              >
-                                Unlink
-                              </button>
-                            )}
-                          </div>
                         </>
                       ) : (
                         <>
@@ -580,90 +576,88 @@ export default function Dashboard() {
                       )}
                     </div>
                   </div>
-                  {!isCollapsed && (
-                    <div className="flex gap-2 items-center flex-wrap">
-                      {isPending ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleYesNo(ev.id, 'yes')}
-                            className="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700"
-                          >
-                            Job Completed
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleYesNo(ev.id, 'no')}
-                            className="px-3 py-1.5 bg-gray-500 text-white rounded text-sm hover:bg-gray-600"
-                          >
-                            Skipped
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <span
-                            className={`px-3 py-1 rounded text-sm ${
-                              record.status === 'yes'
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-gray-100 text-gray-700'
-                            }`}
-                          >
-                            {record.status === 'yes' ? 'Job Completed' : record.status === 'no' ? 'Skipped' : record.status}
-                          </span>
-                          {isYes && (
-                            <>
-                              {mapping ? (
-                                invoiceAlreadySent ? (
-                                  <span className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded text-sm">
-                                    Invoice sent
-                                  </span>
-                                ) : (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setAddExtraWorkEventId(ev.id);
-                                        setExtraWorkItems(parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work).length > 0
-                                          ? parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work)
-                                          : [{ title: '', value: '' }]);
-                                      }}
-                                      className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm hover:bg-emerald-700"
-                                    >
-                                      Add extra work
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setSendInvoiceEventId(ev.id)}
-                                      className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
-                                    >
-                                      Send invoice
-                                    </button>
-                                  </>
-                                )
+                  <div className="flex gap-2 items-center flex-wrap shrink-0 justify-end">
+                    {isPending ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleYesNo(ev.id, 'yes')}
+                          className="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+                        >
+                          Job Completed
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleYesNo(ev.id, 'no')}
+                          className="px-3 py-1.5 bg-gray-500 text-white rounded text-sm hover:bg-gray-600"
+                        >
+                          Skipped
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span
+                          className={`px-3 py-1 rounded text-sm ${
+                            record.status === 'yes'
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          {record.status === 'yes' ? 'Job Completed' : record.status === 'no' ? 'Skipped' : record.status}
+                        </span>
+                        {isYes && (
+                          <>
+                            {mapping ? (
+                              invoiceAlreadySent ? (
+                                <span className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded text-sm">
+                                  Invoice sent
+                                </span>
                               ) : (
                                 <>
                                   <button
                                     type="button"
-                                    onClick={() => setLinkEventId(ev.id)}
-                                    className="px-3 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700"
+                                    onClick={() => {
+                                      setAddExtraWorkEventId(ev.id);
+                                      setExtraWorkItems(parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work).length > 0
+                                        ? parseExtraWorkItems(recordsByEvent[ev.id]?.extra_work)
+                                        : [{ title: '', value: '' }]);
+                                    }}
+                                    className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm hover:bg-emerald-700"
                                   >
-                                    Link invoice
+                                    Add extra work
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => setCustomInvoiceEventId(ev.id)}
-                                    className="px-3 py-1.5 bg-gray-600 text-white rounded text-sm hover:bg-gray-700"
+                                    onClick={() => setSendInvoiceEventId(ev.id)}
+                                    className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
                                   >
-                                    Create custom invoice
+                                    Send invoice
                                   </button>
                                 </>
-                              )}
-                            </>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )}
+                              )
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setLinkEventId(ev.id)}
+                                  className="px-3 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700"
+                                >
+                                  Link invoice
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setCustomInvoiceEventId(ev.id)}
+                                  className="px-3 py-1.5 bg-gray-600 text-white rounded text-sm hover:bg-gray-700"
+                                >
+                                  Create custom invoice
+                                </button>
+                              </>
+                            )}
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               </li>
             );
